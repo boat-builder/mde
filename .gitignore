@@ -7,18 +7,40 @@ yarn-error.log*
 pnpm-debug.log*
 lerna-debug.log*
 
+# Dependencies and build output
 node_modules
 dist
 dist-ssr
+.cache
+.vite
+*.tsbuildinfo
+
+# Environment and secrets
+.env
+.env.*
+!.env.example
 *.local
+*.pem
+*.key
+
+# Test coverage
+coverage
 
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
 .idea
-.DS_Store
 *.suo
 *.ntvs*
 *.njsproj
 *.sln
 *.sw?
+*.sublime-workspace
+*.sublime-project
+
+# OS files
+.DS_Store
+._*
+Thumbs.db
+ehthumbs.db
+Desktop.ini
