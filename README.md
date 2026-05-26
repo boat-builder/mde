@@ -22,59 +22,31 @@ pnpm tauri dev
 
 ## Build & install
 
-The full first-time flow is three steps, in order:
-
-1. **Build** the bundle — `pnpm tauri build`
-2. **Install the .app** to `/Applications` — `./scripts/install-app.sh`
-3. **Install the `mde` CLI shim** — `./scripts/install-cli.sh` (see below)
-
-For subsequent re-installs after code changes, just re-run steps 1 and 2.
-
-### 1. Build
+One script does it all — build the release bundle, install `MDE.app` to
+`/Applications`, install the `mde` CLI shim:
 
 ```sh
-pnpm tauri build
+./scripts/install.sh
 ```
 
-The app bundle is written to `src-tauri/target/release/bundle/macos/MDE.app`.
+Run it the first time to set everything up, and re-run it any time you
+change the code. It is idempotent — the old bundle is wiped before the new
+one is copied so LaunchServices doesn't cache stale `.md` associations.
 
-### 2. Install the .app
+Prerequisites: `pnpm` and Rust (`rustup`). The script sources `~/.cargo/env`
+itself, so the common zsh-doesn't-read-bash-profile gotcha is handled
+automatically.
 
-Install (or re-install) the bundle with the helper script — it resolves paths
-relative to the repo, so it works from any clone location:
+Optional env overrides if the defaults don't fit:
 
 ```sh
-./scripts/install-app.sh                 # default: installs to /Applications
-./scripts/install-app.sh ~/Applications  # or any other directory
+APP_DIR=~/Applications  ./scripts/install.sh   # install .app elsewhere
+CLI_DIR=~/.local/bin    ./scripts/install.sh   # install shim elsewhere
+SKIP_BUILD=1            ./scripts/install.sh   # re-install without rebuilding
+SKIP_CLI=1              ./scripts/install.sh   # only the .app, no shim
 ```
 
-The script removes any existing bundle at the destination, copies the freshly
-built one in, and refreshes LaunchServices so Finder picks up the `.md`
-association. It re-runs itself under `sudo` only when the destination requires
-it (e.g. `/Applications` on locked-down systems).
-
-If you'd rather do it by hand, the equivalent commands are:
-
-```sh
-rm -rf /Applications/MDE.app
-cp -R src-tauri/target/release/bundle/macos/MDE.app /Applications/
-/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f /Applications/MDE.app
-```
-
-The `rm -rf` step matters: macOS caches the previous bundle's file
-associations even after `cp -R` overwrites the binary.
-
-### 3. Install the `mde` CLI shim
-
-After step 2 has placed the app in `/Applications`:
-
-```sh
-./scripts/install-cli.sh                # tries /usr/local/bin, falls back to ~/.local/bin
-sudo ./scripts/install-cli.sh           # if /usr/local/bin needs sudo
-./scripts/install-cli.sh ~/.local/bin   # explicit target
-```
-
-Then:
+Once installed:
 
 ```sh
 mde notes.md
@@ -83,12 +55,14 @@ mde ~/notes                # opens a folder as a workspace
 mde                        # opens an empty editor (welcome screen)
 ```
 
+Or double-click a `.md` file (or a folder) in Finder.
+
 ## Architecture
 
 - **Frontend**: React + Vite + Milkdown Crepe (`@milkdown/crepe`). Crepe is Milkdown's batteries-included preset — slash menu, block handles, toolbar, Notion-like keyboard shortcuts.
 - **Backend**: Tauri 2 (Rust). Commands: `read_file`, `write_file`, `list_md_tree` (walks a directory, returning a pruned tree of folders that contain markdown), `reveal_in_finder`, plus pending-open hand-off for the initial CLI args. `RunEvent::Opened` handles macOS open events for both files and folders. `tauri-plugin-single-instance` forwards CLI argv from a second `mde` invocation into the running window.
 - **File association**: Declared in `src-tauri/tauri.conf.json` under `bundle.fileAssociations`. Tauri injects `CFBundleDocumentTypes` into `Info.plist` at bundle time.
-- **CLI**: `scripts/install-cli.sh` writes a small shell shim that calls `open -a MDE --args <files>`. macOS routes argv through LaunchServices to the bundled app.
+- **CLI**: `scripts/install.sh` writes a small `mde` shell shim that calls `open -a MDE --args <files>`. macOS routes argv through LaunchServices to the bundled app.
 
 ## Saving
 
