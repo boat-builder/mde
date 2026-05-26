@@ -124,9 +124,9 @@ body,
 }
 
 .editor-wrap .milkdown .ProseMirror {
-  max-width: 880px;
+  max-width: 1080px;
   margin: 0 auto;
-  padding: 24px 56px 240px;
+  padding: 24px 64px 240px;
   min-height: calc(100vh - 38px);
   font-size: 16px;
   line-height: 1.6;
