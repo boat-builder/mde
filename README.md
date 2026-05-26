@@ -71,12 +71,18 @@ Save dialog). On window close, a pending change is flushed best-effort.
 
 - `⌘S` — force save now (or Save As if the file is untitled)
 - `⌘Z` / `⌘⇧Z` — undo / redo (also `⌘Y` for redo)
-- `⌘⇧L` — cycle theme: system → light → sepia → dark
 - All Milkdown/Crepe inline-format shortcuts: `⌘B` bold, `⌘I` italic, `⌘K` link, etc.
 - `/` on a new line — slash menu (headings, lists, code blocks, tables, …)
 
 To open a file: double-click a `.md` in Finder, or `mde path/to/file.md` from
 the terminal.
+
+## UI elements
+
+- **Top-left** — the filename (muted, small). Hover it to reveal a copy
+  button that copies the full file path to the clipboard.
+- **Bottom-left** — a small gear button opens a settings popover. Currently
+  exposes the appearance picker.
 
 ## Themes
 

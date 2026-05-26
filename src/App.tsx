@@ -12,15 +12,21 @@ const AUTOSAVE_DEBOUNCE_MS = 600;
 const basename = (p: string) => p.split(/[\\/]/).pop() || p;
 
 type Theme = "system" | "light" | "sepia" | "dark";
-const THEME_CYCLE: Theme[] = ["system", "light", "sepia", "dark"];
+const THEMES: Theme[] = ["system", "light", "sepia", "dark"];
 const THEME_STORAGE_KEY = "mde:theme";
+const THEME_LABEL: Record<Theme, string> = {
+  system: "System",
+  light: "Light",
+  sepia: "Sepia",
+  dark: "Dark",
+};
 
 function readStoredTheme(): Theme {
   try {
     const v = localStorage.getItem(THEME_STORAGE_KEY);
-    if (v && THEME_CYCLE.includes(v as Theme)) return v as Theme;
+    if (v && (THEMES as string[]).includes(v)) return v as Theme;
   } catch {
-    // localStorage may be unavailable; fall through to default
+    // localStorage may be unavailable; fall through
   }
   return "system";
 }
@@ -43,6 +49,10 @@ export default function App() {
   const [theme, setTheme] = useState<Theme>(() => readStoredTheme());
 
   useEffect(() => {
+    pathRef.current = path;
+  }, [path]);
+
+  useEffect(() => {
     applyTheme(theme);
     try {
       localStorage.setItem(THEME_STORAGE_KEY, theme);
@@ -50,17 +60,6 @@ export default function App() {
       // ignore
     }
   }, [theme]);
-
-  const cycleTheme = useCallback(() => {
-    setTheme((t) => {
-      const i = THEME_CYCLE.indexOf(t);
-      return THEME_CYCLE[(i + 1) % THEME_CYCLE.length];
-    });
-  }, []);
-
-  useEffect(() => {
-    pathRef.current = path;
-  }, [path]);
 
   const writeToDisk = useCallback(async (target: string, contents: string) => {
     try {
@@ -79,7 +78,7 @@ export default function App() {
     autosaveTimerRef.current = window.setTimeout(() => {
       autosaveTimerRef.current = null;
       const target = pathRef.current;
-      if (!target) return; // Untitled — manual ⌘S to choose a path
+      if (!target) return;
       const snapshot = currentMarkdownRef.current;
       if (snapshot === lastSavedRef.current) return;
       void writeToDisk(target, snapshot);
@@ -123,8 +122,6 @@ export default function App() {
     (md: string) => {
       currentMarkdownRef.current = md;
       if (!baselineCapturedRef.current) {
-        // First emit after load: Milkdown's normalized serialization of the
-        // just-loaded file. Treat as the saved baseline; don't trigger save.
         lastSavedRef.current = md;
         baselineCapturedRef.current = true;
         return;
@@ -162,16 +159,12 @@ export default function App() {
       if (mod && !e.shiftKey && e.key.toLowerCase() === "s") {
         e.preventDefault();
         void handleSave();
-      } else if (mod && e.shiftKey && e.key.toLowerCase() === "l") {
-        e.preventDefault();
-        cycleTheme();
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [handleSave, cycleTheme]);
+  }, [handleSave]);
 
-  // Flush on close (best-effort — Tauri close-requested event)
   useEffect(() => {
     const unlisten = getCurrentWindow().onCloseRequested(async () => {
       if (autosaveTimerRef.current != null) {
@@ -198,6 +191,7 @@ export default function App() {
   return (
     <div className="app">
       <div className="drag-strip" data-tauri-drag-region />
+      <FileLabel path={path} dirty={dirty} />
       <main className="editor-wrap">
         <Editor
           ref={editorRef}
@@ -206,23 +200,164 @@ export default function App() {
           onChange={onMarkdownChange}
         />
       </main>
-      <ThemeToast theme={theme} />
+      <Settings theme={theme} onChange={setTheme} />
     </div>
   );
 }
 
-function ThemeToast({ theme }: { theme: Theme }) {
-  const [visible, setVisible] = useState(false);
-  const firstRenderRef = useRef(true);
-  useEffect(() => {
-    if (firstRenderRef.current) {
-      firstRenderRef.current = false;
-      return;
+/* ---------- Subviews ---------- */
+
+function FileLabel({ path, dirty }: { path: string | null; dirty: boolean }) {
+  const [copied, setCopied] = useState(false);
+  const onCopy = useCallback(async () => {
+    if (!path) return;
+    try {
+      await navigator.clipboard.writeText(path);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1200);
+    } catch (e) {
+      console.error("clipboard write failed", e);
     }
-    setVisible(true);
-    const id = window.setTimeout(() => setVisible(false), 900);
-    return () => window.clearTimeout(id);
-  }, [theme]);
-  if (!visible) return null;
-  return <div className="theme-toast">{theme}</div>;
+  }, [path]);
+
+  const label = path ? basename(path) : "Untitled";
+  return (
+    <div className="file-label" title={path ?? "Untitled"}>
+      <span className="file-label-name">{label}</span>
+      {dirty && <span className="file-label-dot" aria-hidden>●</span>}
+      {path && (
+        <button
+          className="file-label-copy"
+          onClick={onCopy}
+          title="Copy full path"
+          aria-label="Copy full file path"
+        >
+          {copied ? <CheckIcon /> : <CopyIcon />}
+        </button>
+      )}
+    </div>
+  );
+}
+
+function Settings({
+  theme,
+  onChange,
+}: {
+  theme: Theme;
+  onChange: (t: Theme) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const wrapRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDoc = (e: MouseEvent) => {
+      if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) {
+        setOpen(false);
+      }
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setOpen(false);
+    };
+    document.addEventListener("mousedown", onDoc);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDoc);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+
+  return (
+    <div ref={wrapRef} className="settings-wrap">
+      {open && (
+        <div className="settings-popover" role="menu" aria-label="Settings">
+          <div className="settings-section-label">Appearance</div>
+          {THEMES.map((t) => (
+            <button
+              key={t}
+              role="menuitemradio"
+              aria-checked={theme === t}
+              className={`settings-option ${theme === t ? "is-active" : ""}`}
+              onClick={() => {
+                onChange(t);
+                setOpen(false);
+              }}
+            >
+              <span className="settings-option-check">
+                {theme === t ? <CheckIcon /> : null}
+              </span>
+              <span className="settings-option-label">{THEME_LABEL[t]}</span>
+            </button>
+          ))}
+        </div>
+      )}
+      <button
+        className="settings-fab"
+        onClick={() => setOpen((o) => !o)}
+        aria-label="Settings"
+        aria-expanded={open}
+        title="Settings"
+      >
+        <GearIcon />
+      </button>
+    </div>
+  );
+}
+
+/* ---------- Icons ---------- */
+
+function GearIcon() {
+  return (
+    <svg
+      width="15"
+      height="15"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden
+    >
+      <circle cx="12" cy="12" r="3" />
+      <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+    </svg>
+  );
+}
+
+function CopyIcon() {
+  return (
+    <svg
+      width="12"
+      height="12"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden
+    >
+      <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
+      <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+    </svg>
+  );
+}
+
+function CheckIcon() {
+  return (
+    <svg
+      width="12"
+      height="12"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden
+    >
+      <polyline points="20 6 9 17 4 12" />
+    </svg>
+  );
 }

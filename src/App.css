@@ -279,26 +279,167 @@ body,
   }
 }
 
-/* ---------- Theme toast ---------- */
+/* ---------- File label (top-left) ----------
+   Sits over the draggable strip; left offset clears the macOS traffic lights. */
 
-.theme-toast {
+.file-label {
   position: fixed;
-  bottom: 24px;
-  left: 50%;
-  transform: translateX(-50%);
-  padding: 6px 14px;
+  top: 11px;
+  left: 84px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  max-width: calc(100vw - 120px);
   font-size: 12px;
   font-weight: 500;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  border-radius: 999px;
-  background: var(--app-toast-bg);
-  color: var(--app-toast-fg);
-  pointer-events: none;
-  animation: theme-toast-in 0.15s ease-out;
+  color: var(--app-text-muted);
+  user-select: none;
+  z-index: 5;
 }
 
-@keyframes theme-toast-in {
-  from { opacity: 0; transform: translate(-50%, 4px); }
-  to   { opacity: 1; transform: translate(-50%, 0); }
+.file-label-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 50vw;
+}
+
+.file-label-dot {
+  color: var(--app-dirty);
+  font-size: 8px;
+  line-height: 1;
+}
+
+.file-label-copy {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 5px;
+  border: none;
+  background: transparent;
+  color: var(--app-text-muted);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.12s, background 0.12s, color 0.12s;
+}
+
+.file-label:hover .file-label-copy {
+  opacity: 1;
+}
+
+.file-label-copy:hover {
+  background: var(--app-hover);
+  color: var(--app-text);
+}
+
+/* ---------- Settings (bottom-left) ---------- */
+
+.settings-wrap {
+  position: fixed;
+  bottom: 16px;
+  left: 16px;
+  z-index: 20;
+}
+
+.settings-fab {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 1px solid var(--app-border);
+  border-radius: 8px;
+  background: var(--app-bg);
+  color: var(--app-text-muted);
+  cursor: pointer;
+  opacity: 0.7;
+  transition: opacity 0.12s, color 0.12s, background 0.12s, border-color 0.12s;
+}
+
+.settings-fab:hover,
+.settings-fab[aria-expanded="true"] {
+  opacity: 1;
+  color: var(--app-text);
+  background: var(--app-hover);
+}
+
+.settings-popover {
+  position: absolute;
+  bottom: 40px;
+  left: 0;
+  min-width: 168px;
+  padding: 6px;
+  background: var(--app-bg);
+  border: 1px solid var(--app-border);
+  border-radius: 10px;
+  box-shadow:
+    0 4px 12px rgba(0, 0, 0, 0.08),
+    0 12px 32px rgba(0, 0, 0, 0.12);
+  z-index: 21;
+  animation: settings-popover-in 0.1s ease-out;
+}
+
+[data-theme="dark"] .settings-popover {
+  box-shadow:
+    0 4px 12px rgba(0, 0, 0, 0.5),
+    0 12px 32px rgba(0, 0, 0, 0.6);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme]) .settings-popover,
+  [data-theme="system"] .settings-popover {
+    box-shadow:
+      0 4px 12px rgba(0, 0, 0, 0.5),
+      0 12px 32px rgba(0, 0, 0, 0.6);
+  }
+}
+
+@keyframes settings-popover-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.settings-section-label {
+  padding: 6px 10px 4px;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--app-text-muted);
+}
+
+.settings-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 10px;
+  font: inherit;
+  font-size: 13px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--app-text);
+  cursor: pointer;
+  text-align: left;
+}
+
+.settings-option:hover {
+  background: var(--app-hover);
+}
+
+.settings-option-check {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  color: var(--app-text);
+}
+
+.settings-option.is-active .settings-option-label {
+  font-weight: 600;
 }
