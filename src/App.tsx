@@ -6,6 +6,13 @@ import { save as saveDialog } from "@tauri-apps/plugin-dialog";
 import Editor, { EditorHandle } from "./Editor";
 
 type OpenFilePayload = { path: string };
+type FileSnapshot = { mtime_ms: number; size: number };
+type ReadFileResult = { contents: string; snapshot: FileSnapshot };
+type ExternalChangePayload = { path: string; snapshot: FileSnapshot };
+type WriteErrorPayload =
+  | { kind: "io"; message: string }
+  | { kind: "conflict"; current: FileSnapshot };
+type Conflict = { diskSnapshot: FileSnapshot };
 
 const AUTOSAVE_DEBOUNCE_MS = 600;
 
@@ -35,22 +42,45 @@ function applyTheme(t: Theme) {
   document.documentElement.dataset.theme = t;
 }
 
+function isWriteError(e: unknown): e is WriteErrorPayload {
+  return (
+    typeof e === "object" &&
+    e !== null &&
+    "kind" in e &&
+    ((e as { kind: unknown }).kind === "io" ||
+      (e as { kind: unknown }).kind === "conflict")
+  );
+}
+
 export default function App() {
   const [path, setPath] = useState<string | null>(null);
   const [initialMarkdown, setInitialMarkdown] = useState<string>("");
   const [dirty, setDirty] = useState(false);
   const [ready, setReady] = useState(false);
+  const [loadKey, setLoadKey] = useState(0);
+  const [conflict, setConflict] = useState<Conflict | null>(null);
   const editorRef = useRef<EditorHandle>(null);
   const currentMarkdownRef = useRef<string>("");
   const lastSavedRef = useRef<string>("");
   const baselineCapturedRef = useRef<boolean>(false);
   const pathRef = useRef<string | null>(null);
+  const snapshotRef = useRef<FileSnapshot | null>(null);
   const autosaveTimerRef = useRef<number | null>(null);
+  const dirtyRef = useRef(false);
+  const conflictRef = useRef<Conflict | null>(null);
   const [theme, setTheme] = useState<Theme>(() => readStoredTheme());
 
   useEffect(() => {
     pathRef.current = path;
   }, [path]);
+
+  useEffect(() => {
+    dirtyRef.current = dirty;
+  }, [dirty]);
+
+  useEffect(() => {
+    conflictRef.current = conflict;
+  }, [conflict]);
 
   useEffect(() => {
     applyTheme(theme);
@@ -63,11 +93,20 @@ export default function App() {
 
   const writeToDisk = useCallback(async (target: string, contents: string) => {
     try {
-      await invoke("write_file", { path: target, contents });
+      const newSnapshot = await invoke<FileSnapshot>("write_file", {
+        path: target,
+        contents,
+        expected: snapshotRef.current,
+      });
+      snapshotRef.current = newSnapshot;
       lastSavedRef.current = contents;
       if (currentMarkdownRef.current === contents) setDirty(false);
     } catch (e) {
-      console.error("autosave failed", e);
+      if (isWriteError(e) && e.kind === "conflict") {
+        setConflict({ diskSnapshot: e.current });
+      } else {
+        console.error("autosave failed", e);
+      }
     }
   }, []);
 
@@ -77,6 +116,7 @@ export default function App() {
     }
     autosaveTimerRef.current = window.setTimeout(() => {
       autosaveTimerRef.current = null;
+      if (conflictRef.current) return; // pause autosave while a conflict is unresolved
       const target = pathRef.current;
       if (!target) return;
       const snapshot = currentMarkdownRef.current;
@@ -87,22 +127,61 @@ export default function App() {
 
   const loadFile = useCallback(async (p: string) => {
     try {
-      const text = await invoke<string>("read_file", { path: p });
+      const result = await invoke<ReadFileResult>("read_file", { path: p });
       if (autosaveTimerRef.current != null) {
         window.clearTimeout(autosaveTimerRef.current);
         autosaveTimerRef.current = null;
       }
       baselineCapturedRef.current = false;
       setPath(p);
-      setInitialMarkdown(text);
-      currentMarkdownRef.current = text;
-      lastSavedRef.current = text;
+      setInitialMarkdown(result.contents);
+      currentMarkdownRef.current = result.contents;
+      lastSavedRef.current = result.contents;
+      snapshotRef.current = result.snapshot;
       setDirty(false);
+      setConflict(null);
+      setLoadKey((k) => k + 1);
+      try {
+        await invoke("watch_file", { path: p });
+      } catch (e) {
+        console.error("watch_file failed", e);
+      }
     } catch (e) {
       console.error(e);
       alert(`Could not open ${p}\n${e}`);
     }
   }, []);
+
+  const reloadFromDisk = useCallback(async () => {
+    const target = pathRef.current;
+    if (!target) return;
+    if (autosaveTimerRef.current != null) {
+      window.clearTimeout(autosaveTimerRef.current);
+      autosaveTimerRef.current = null;
+    }
+    try {
+      const result = await invoke<ReadFileResult>("read_file", { path: target });
+      baselineCapturedRef.current = false;
+      setInitialMarkdown(result.contents);
+      currentMarkdownRef.current = result.contents;
+      lastSavedRef.current = result.contents;
+      snapshotRef.current = result.snapshot;
+      setDirty(false);
+      setConflict(null);
+      setLoadKey((k) => k + 1);
+    } catch (e) {
+      console.error("reload failed", e);
+    }
+  }, []);
+
+  const keepMyVersion = useCallback(() => {
+    const c = conflictRef.current;
+    if (c) snapshotRef.current = c.diskSnapshot;
+    setConflict(null);
+    if (currentMarkdownRef.current !== lastSavedRef.current) {
+      scheduleAutosave();
+    }
+  }, [scheduleAutosave]);
 
   useEffect(() => {
     (async () => {
@@ -117,6 +196,20 @@ export default function App() {
       void un.then((f) => f());
     };
   }, [loadFile]);
+
+  useEffect(() => {
+    const un = listen<ExternalChangePayload>("file-externally-changed", (e) => {
+      if (e.payload.path !== pathRef.current) return;
+      if (dirtyRef.current || conflictRef.current) {
+        setConflict({ diskSnapshot: e.payload.snapshot });
+      } else {
+        void reloadFromDisk();
+      }
+    });
+    return () => {
+      void un.then((f) => f());
+    };
+  }, [reloadFromDisk]);
 
   const onMarkdownChange = useCallback(
     (md: string) => {
@@ -135,6 +228,7 @@ export default function App() {
 
   const handleSave = useCallback(async () => {
     let target = pathRef.current;
+    const isNewPath = !target;
     if (!target) {
       const chosen = await saveDialog({
         title: "Save markdown",
@@ -151,6 +245,13 @@ export default function App() {
       autosaveTimerRef.current = null;
     }
     await writeToDisk(target, currentMarkdownRef.current);
+    if (isNewPath) {
+      try {
+        await invoke("watch_file", { path: target });
+      } catch (e) {
+        console.error("watch_file failed", e);
+      }
+    }
   }, [writeToDisk]);
 
   useEffect(() => {
@@ -176,10 +277,16 @@ export default function App() {
     <div className="app">
       <div className="drag-strip" data-tauri-drag-region />
       <FileLabel path={path} dirty={dirty} />
+      {conflict && (
+        <ConflictBanner
+          onReload={() => void reloadFromDisk()}
+          onKeep={keepMyVersion}
+        />
+      )}
       <main className="editor-wrap">
         <Editor
           ref={editorRef}
-          key={path ?? "__empty__"}
+          key={loadKey}
           initialMarkdown={initialMarkdown}
           onChange={onMarkdownChange}
         />
@@ -190,6 +297,33 @@ export default function App() {
 }
 
 /* ---------- Subviews ---------- */
+
+function ConflictBanner({
+  onReload,
+  onKeep,
+}: {
+  onReload: () => void;
+  onKeep: () => void;
+}) {
+  return (
+    <div className="conflict-banner" role="alert">
+      <span className="conflict-banner-text">
+        This file has changed on disk.
+      </span>
+      <div className="conflict-banner-actions">
+        <button className="conflict-banner-btn" onClick={onReload}>
+          Reload from disk
+        </button>
+        <button
+          className="conflict-banner-btn is-primary"
+          onClick={onKeep}
+        >
+          Keep my version
+        </button>
+      </div>
+    </div>
+  );
+}
 
 function FileLabel({ path, dirty }: { path: string | null; dirty: boolean }) {
   const [copied, setCopied] = useState(false);
