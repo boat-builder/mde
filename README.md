@@ -20,14 +20,27 @@ pnpm install
 pnpm tauri dev
 ```
 
-## Build a release
+## Build & install
+
+The full first-time flow is three steps, in order:
+
+1. **Build** the bundle — `pnpm tauri build`
+2. **Install the .app** to `/Applications` — `./scripts/install-app.sh`
+3. **Install the `mde` CLI shim** — `./scripts/install-cli.sh` (see below)
+
+For subsequent re-installs after code changes, just re-run steps 1 and 2.
+
+### 1. Build
 
 ```sh
 pnpm tauri build
 ```
 
 The app bundle is written to `src-tauri/target/release/bundle/macos/MDE.app`.
-Install (or re-install) it with the helper script — it resolves paths
+
+### 2. Install the .app
+
+Install (or re-install) the bundle with the helper script — it resolves paths
 relative to the repo, so it works from any clone location:
 
 ```sh
@@ -51,9 +64,9 @@ cp -R src-tauri/target/release/bundle/macos/MDE.app /Applications/
 The `rm -rf` step matters: macOS caches the previous bundle's file
 associations even after `cp -R` overwrites the binary.
 
-## Install the `mde` CLI shim
+### 3. Install the `mde` CLI shim
 
-After the app is in `/Applications`:
+After step 2 has placed the app in `/Applications`:
 
 ```sh
 ./scripts/install-cli.sh                # tries /usr/local/bin, falls back to ~/.local/bin
