@@ -1,0 +1,445 @@
+/* ---------- Theme palettes ----------
+
+  Four modes, applied via [data-theme] on <html>:
+    - "system"  → follows prefers-color-scheme (default vars are light; the
+                  media query at the bottom swaps to dark when the OS is dark)
+    - "light"   → Notion-style pure white + warm-dark text
+    - "sepia"   → cream / paper feel à la iA Writer, Solarized Light, Kindle
+    - "dark"    → low-contrast dark grays (kept as the previous dark mode)
+
+  Each theme sets two layers:
+    1. App-level tokens (--app-*)
+    2. Crepe editor variables on .milkdown (--crepe-*)
+*/
+
+:root,
+[data-theme="system"],
+[data-theme="light"] {
+  --app-bg: #ffffff;
+  --app-surface: #ffffff;
+  --app-text: #37352f;
+  --app-text-muted: rgba(55, 53, 47, 0.5);
+  --app-border: rgba(55, 53, 47, 0.09);
+  --app-hover: rgba(55, 53, 47, 0.06);
+  --app-dirty: #d29922;
+  --app-toast-bg: rgba(55, 53, 47, 0.85);
+  --app-toast-fg: #ffffff;
+}
+
+[data-theme="sepia"] {
+  --app-bg: #faf5ed;
+  --app-surface: #faf5ed;
+  --app-text: #3c3835;
+  --app-text-muted: rgba(60, 56, 53, 0.55);
+  --app-border: rgba(60, 56, 53, 0.1);
+  --app-hover: rgba(60, 56, 53, 0.06);
+  --app-dirty: #c08a3a;
+  --app-toast-bg: rgba(60, 56, 53, 0.85);
+  --app-toast-fg: #faf5ed;
+}
+
+[data-theme="dark"] {
+  --app-bg: #191919;
+  --app-surface: #191919;
+  --app-text: #ebebeb;
+  --app-text-muted: rgba(255, 255, 255, 0.45);
+  --app-border: rgba(255, 255, 255, 0.08);
+  --app-hover: rgba(255, 255, 255, 0.06);
+  --app-dirty: #d29922;
+  --app-toast-bg: rgba(0, 0, 0, 0.7);
+  --app-toast-fg: #ebebeb;
+}
+
+/* "system" mode follows the OS when the OS is dark. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme]),
+  [data-theme="system"] {
+    --app-bg: #191919;
+    --app-surface: #191919;
+    --app-text: #ebebeb;
+    --app-text-muted: rgba(255, 255, 255, 0.45);
+    --app-border: rgba(255, 255, 255, 0.08);
+    --app-hover: rgba(255, 255, 255, 0.06);
+    --app-dirty: #d29922;
+    --app-toast-bg: rgba(0, 0, 0, 0.7);
+    --app-toast-fg: #ebebeb;
+  }
+}
+
+/* ---------- Base ---------- */
+
+:root {
+  font-family: -apple-system, BlinkMacSystemFont, "Inter", "SF Pro Text",
+    "Segoe UI", sans-serif;
+  font-size: 16px;
+  color: var(--app-text);
+  background-color: var(--app-bg);
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  background: var(--app-bg);
+}
+
+/* ---------- App shell ---------- */
+
+.app {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  background: var(--app-bg);
+  position: relative;
+}
+
+.drag-strip {
+  height: 38px;
+  flex-shrink: 0;
+  background: var(--app-bg);
+  user-select: none;
+}
+
+/* ---------- Editor canvas ---------- */
+
+.editor-wrap {
+  flex: 1;
+  overflow-y: auto;
+  background: var(--app-surface);
+}
+
+.editor-wrap .milkdown {
+  background: transparent !important;
+  color: var(--app-text);
+  min-height: 100%;
+}
+
+.editor-wrap .milkdown .ProseMirror {
+  max-width: 1080px;
+  margin: 0 auto;
+  padding: 24px 64px 240px;
+  min-height: calc(100vh - 38px);
+  font-size: 16px;
+  line-height: 1.6;
+}
+
+@media (max-width: 720px) {
+  .editor-wrap .milkdown .ProseMirror {
+    padding: 24px 28px 200px;
+  }
+}
+
+.editor-wrap .milkdown .ProseMirror h1,
+.editor-wrap .milkdown .ProseMirror h2,
+.editor-wrap .milkdown .ProseMirror h3,
+.editor-wrap .milkdown .ProseMirror h4,
+.editor-wrap .milkdown .ProseMirror h5,
+.editor-wrap .milkdown .ProseMirror h6 {
+  font-family: inherit;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+
+.editor-wrap .milkdown .ProseMirror h1 {
+  font-size: 32px;
+  line-height: 1.25;
+  margin-top: 28px;
+}
+.editor-wrap .milkdown .ProseMirror h2 {
+  font-size: 24px;
+  line-height: 1.3;
+  margin-top: 24px;
+}
+.editor-wrap .milkdown .ProseMirror h3 {
+  font-size: 19px;
+  line-height: 1.35;
+  margin-top: 20px;
+}
+.editor-wrap .milkdown .ProseMirror h4,
+.editor-wrap .milkdown .ProseMirror h5,
+.editor-wrap .milkdown .ProseMirror h6 {
+  font-size: 16px;
+  margin-top: 16px;
+}
+
+.editor-wrap .milkdown .ProseMirror p {
+  font-size: 16px;
+  line-height: 1.6;
+  padding: 3px 0;
+}
+
+.editor-wrap .milkdown .crepe-placeholder::before {
+  color: var(--app-text-muted);
+  font-style: normal;
+}
+
+/* ---------- Crepe editor variables per theme ----------
+   .milkdown reads --crepe-color-* tokens for its block/menu/toolbar styling.
+   We override them per theme so the slash menu, drag handles, toolbar, etc.
+   match the surrounding surface. */
+
+:root .milkdown,
+[data-theme="system"] .milkdown,
+[data-theme="light"] .milkdown {
+  --crepe-color-background: #ffffff;
+  --crepe-color-on-background: #37352f;
+  --crepe-color-surface: #f7f6f3;
+  --crepe-color-surface-low: #efeeea;
+  --crepe-color-on-surface: #37352f;
+  --crepe-color-on-surface-variant: rgba(55, 53, 47, 0.65);
+  --crepe-color-outline: rgba(55, 53, 47, 0.2);
+  --crepe-color-primary: #37352f;
+  --crepe-color-secondary: #e9e7e1;
+  --crepe-color-on-secondary: #37352f;
+  --crepe-color-inverse: #37352f;
+  --crepe-color-on-inverse: #ffffff;
+  --crepe-color-inline-code: #b45309;
+  --crepe-color-error: #b91c1c;
+  --crepe-color-hover: rgba(55, 53, 47, 0.06);
+  --crepe-color-selected: rgba(35, 131, 226, 0.18);
+  --crepe-color-inline-area: rgba(55, 53, 47, 0.08);
+}
+
+[data-theme="sepia"] .milkdown {
+  --crepe-color-background: #faf5ed;
+  --crepe-color-on-background: #3c3835;
+  --crepe-color-surface: #f4ecd9;
+  --crepe-color-surface-low: #ebe1c8;
+  --crepe-color-on-surface: #3c3835;
+  --crepe-color-on-surface-variant: rgba(60, 56, 53, 0.65);
+  --crepe-color-outline: rgba(60, 56, 53, 0.22);
+  --crepe-color-primary: #3c3835;
+  --crepe-color-secondary: #e8dec5;
+  --crepe-color-on-secondary: #3c3835;
+  --crepe-color-inverse: #3c3835;
+  --crepe-color-on-inverse: #faf5ed;
+  --crepe-color-inline-code: #b25237;
+  --crepe-color-error: #b25237;
+  --crepe-color-hover: rgba(60, 56, 53, 0.07);
+  --crepe-color-selected: rgba(60, 56, 53, 0.14);
+  --crepe-color-inline-area: rgba(60, 56, 53, 0.08);
+}
+
+[data-theme="dark"] .milkdown {
+  --crepe-color-background: #191919;
+  --crepe-color-on-background: #ebebeb;
+  --crepe-color-surface: #1f1f1f;
+  --crepe-color-surface-low: #242424;
+  --crepe-color-on-surface: #ebebeb;
+  --crepe-color-on-surface-variant: rgba(255, 255, 255, 0.6);
+  --crepe-color-outline: rgba(255, 255, 255, 0.18);
+  --crepe-color-primary: #ffffff;
+  --crepe-color-secondary: #3a3a3a;
+  --crepe-color-on-secondary: #ebebeb;
+  --crepe-color-inverse: #ebebeb;
+  --crepe-color-on-inverse: #1a1a1a;
+  --crepe-color-inline-code: #f59e9e;
+  --crepe-color-error: #f87171;
+  --crepe-color-hover: rgba(255, 255, 255, 0.07);
+  --crepe-color-selected: rgba(255, 255, 255, 0.12);
+  --crepe-color-inline-area: rgba(255, 255, 255, 0.08);
+
+  --crepe-shadow-1:
+    0 1px 2px 0 rgba(0, 0, 0, 0.6),
+    0 1px 3px 1px rgba(0, 0, 0, 0.5);
+  --crepe-shadow-2:
+    0 1px 2px 0 rgba(0, 0, 0, 0.7),
+    0 2px 6px 2px rgba(0, 0, 0, 0.5);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme]) .milkdown,
+  [data-theme="system"] .milkdown {
+    --crepe-color-background: #191919;
+    --crepe-color-on-background: #ebebeb;
+    --crepe-color-surface: #1f1f1f;
+    --crepe-color-surface-low: #242424;
+    --crepe-color-on-surface: #ebebeb;
+    --crepe-color-on-surface-variant: rgba(255, 255, 255, 0.6);
+    --crepe-color-outline: rgba(255, 255, 255, 0.18);
+    --crepe-color-primary: #ffffff;
+    --crepe-color-secondary: #3a3a3a;
+    --crepe-color-on-secondary: #ebebeb;
+    --crepe-color-inverse: #ebebeb;
+    --crepe-color-on-inverse: #1a1a1a;
+    --crepe-color-inline-code: #f59e9e;
+    --crepe-color-error: #f87171;
+    --crepe-color-hover: rgba(255, 255, 255, 0.07);
+    --crepe-color-selected: rgba(255, 255, 255, 0.12);
+    --crepe-color-inline-area: rgba(255, 255, 255, 0.08);
+  }
+}
+
+/* ---------- File label (top-left) ----------
+   Sits over the draggable strip; left offset clears the macOS traffic lights. */
+
+.file-label {
+  position: fixed;
+  top: 11px;
+  left: 84px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  max-width: calc(100vw - 120px);
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--app-text-muted);
+  user-select: none;
+  z-index: 5;
+}
+
+.file-label-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 50vw;
+}
+
+.file-label-dot {
+  color: var(--app-dirty);
+  font-size: 8px;
+  line-height: 1;
+}
+
+.file-label-copy {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 5px;
+  border: none;
+  background: transparent;
+  color: var(--app-text-muted);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.12s, background 0.12s, color 0.12s;
+}
+
+.file-label:hover .file-label-copy {
+  opacity: 1;
+}
+
+.file-label-copy:hover {
+  background: var(--app-hover);
+  color: var(--app-text);
+}
+
+/* ---------- Settings (bottom-left) ---------- */
+
+.settings-wrap {
+  position: fixed;
+  bottom: 16px;
+  left: 16px;
+  z-index: 20;
+}
+
+.settings-fab {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 1px solid var(--app-border);
+  border-radius: 8px;
+  background: var(--app-bg);
+  color: var(--app-text-muted);
+  cursor: pointer;
+  opacity: 0.7;
+  transition: opacity 0.12s, color 0.12s, background 0.12s, border-color 0.12s;
+}
+
+.settings-fab:hover,
+.settings-fab[aria-expanded="true"] {
+  opacity: 1;
+  color: var(--app-text);
+  background: var(--app-hover);
+}
+
+.settings-popover {
+  position: absolute;
+  bottom: 40px;
+  left: 0;
+  min-width: 168px;
+  padding: 6px;
+  background: var(--app-bg);
+  border: 1px solid var(--app-border);
+  border-radius: 10px;
+  box-shadow:
+    0 4px 12px rgba(0, 0, 0, 0.08),
+    0 12px 32px rgba(0, 0, 0, 0.12);
+  z-index: 21;
+  animation: settings-popover-in 0.1s ease-out;
+}
+
+[data-theme="dark"] .settings-popover {
+  box-shadow:
+    0 4px 12px rgba(0, 0, 0, 0.5),
+    0 12px 32px rgba(0, 0, 0, 0.6);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme]) .settings-popover,
+  [data-theme="system"] .settings-popover {
+    box-shadow:
+      0 4px 12px rgba(0, 0, 0, 0.5),
+      0 12px 32px rgba(0, 0, 0, 0.6);
+  }
+}
+
+@keyframes settings-popover-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.settings-section-label {
+  padding: 6px 10px 4px;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--app-text-muted);
+}
+
+.settings-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 10px;
+  font: inherit;
+  font-size: 13px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--app-text);
+  cursor: pointer;
+  text-align: left;
+}
+
+.settings-option:hover {
+  background: var(--app-hover);
+}
+
+.settings-option-check {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  color: var(--app-text);
+}
+
+.settings-option.is-active .settings-option-label {
+  font-weight: 600;
+}
