@@ -26,8 +26,20 @@ pnpm tauri build
 ```
 
 The app bundle is written to `src-tauri/target/release/bundle/macos/MDE.app`.
-Install (or re-install) it to `/Applications` and refresh the LaunchServices
-database so Finder picks up the `.md` association:
+Install (or re-install) it with the helper script — it resolves paths
+relative to the repo, so it works from any clone location:
+
+```sh
+./scripts/install-app.sh                 # default: installs to /Applications
+./scripts/install-app.sh ~/Applications  # or any other directory
+```
+
+The script removes any existing bundle at the destination, copies the freshly
+built one in, and refreshes LaunchServices so Finder picks up the `.md`
+association. It re-runs itself under `sudo` only when the destination requires
+it (e.g. `/Applications` on locked-down systems).
+
+If you'd rather do it by hand, the equivalent commands are:
 
 ```sh
 rm -rf /Applications/MDE.app
@@ -35,8 +47,8 @@ cp -R src-tauri/target/release/bundle/macos/MDE.app /Applications/
 /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f /Applications/MDE.app
 ```
 
-The `rm -rf` keeps re-installs clean — macOS otherwise caches the old bundle's
-file associations even after `cp -R` overwrites the binary.
+The `rm -rf` step matters: macOS caches the previous bundle's file
+associations even after `cp -R` overwrites the binary.
 
 ## Install the `mde` CLI shim
 
