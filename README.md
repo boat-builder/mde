@@ -65,7 +65,7 @@ mde ~/projects/README.md
 
 Auto-saves to the open file 600ms after the last keystroke. `⌘S` forces an
 immediate save (and is the only way to save an Untitled buffer — it opens a
-Save dialog). On window close, a pending change is flushed best-effort.
+Save dialog).
 
 ## Keyboard
 

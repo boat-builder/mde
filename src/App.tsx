@@ -166,22 +166,6 @@ export default function App() {
   }, [handleSave]);
 
   useEffect(() => {
-    const unlisten = getCurrentWindow().onCloseRequested(async () => {
-      if (autosaveTimerRef.current != null) {
-        window.clearTimeout(autosaveTimerRef.current);
-        autosaveTimerRef.current = null;
-      }
-      const target = pathRef.current;
-      if (target && currentMarkdownRef.current !== lastSavedRef.current) {
-        await writeToDisk(target, currentMarkdownRef.current);
-      }
-    });
-    return () => {
-      void unlisten.then((f) => f());
-    };
-  }, [writeToDisk]);
-
-  useEffect(() => {
     const title = path ? `${dirty ? "● " : ""}${basename(path)}` : "MDE";
     void getCurrentWindow().setTitle(title);
   }, [path, dirty]);
