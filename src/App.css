@@ -468,6 +468,60 @@ body,
   font-weight: 600;
 }
 
+/* ---------- Conflict banner ---------- */
+
+.conflict-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 10px 16px;
+  margin: 0 12px;
+  border: 1px solid var(--app-border);
+  border-radius: 8px;
+  background: var(--app-hover);
+  color: var(--app-text);
+  font-size: 13px;
+  z-index: 4;
+}
+
+.conflict-banner-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.conflict-banner-actions {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.conflict-banner-btn {
+  padding: 5px 10px;
+  font: inherit;
+  font-size: 12px;
+  border: 1px solid var(--app-border);
+  border-radius: 6px;
+  background: var(--app-bg);
+  color: var(--app-text);
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s, border-color 0.12s;
+}
+
+.conflict-banner-btn:hover {
+  background: var(--app-hover);
+}
+
+.conflict-banner-btn.is-primary {
+  background: var(--app-text);
+  color: var(--app-bg);
+  border-color: var(--app-text);
+}
+
+.conflict-banner-btn.is-primary:hover {
+  opacity: 0.9;
+}
+
 .settings-option-kbd {
   margin-left: auto;
   font-size: 11px;
