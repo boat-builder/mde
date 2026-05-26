@@ -25,17 +25,18 @@ pnpm tauri dev
 pnpm tauri build
 ```
 
-The app bundle is written to `src-tauri/target/release/bundle/macos/MDE.app`. Copy it to `/Applications`:
+The app bundle is written to `src-tauri/target/release/bundle/macos/MDE.app`.
+Install (or re-install) it to `/Applications` and refresh the LaunchServices
+database so Finder picks up the `.md` association:
 
 ```sh
+rm -rf /Applications/MDE.app
 cp -R src-tauri/target/release/bundle/macos/MDE.app /Applications/
-```
-
-Force LaunchServices to pick up the file association (otherwise Finder's "Open With" may not list MDE):
-
-```sh
 /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f /Applications/MDE.app
 ```
+
+The `rm -rf` keeps re-installs clean — macOS otherwise caches the old bundle's
+file associations even after `cp -R` overwrites the binary.
 
 ## Install the `mde` CLI shim
 
