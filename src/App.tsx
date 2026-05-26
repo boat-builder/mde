@@ -2,10 +2,12 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { save as saveDialog } from "@tauri-apps/plugin-dialog";
+import { save as saveDialog, open as openDialog } from "@tauri-apps/plugin-dialog";
 import Editor, { EditorHandle } from "./Editor";
+import Sidebar from "./Sidebar";
 
 type OpenFilePayload = { path: string };
+type OpenFolderPayload = { path: string };
 
 const AUTOSAVE_DEBOUNCE_MS = 600;
 
@@ -14,6 +16,8 @@ const basename = (p: string) => p.split(/[\\/]/).pop() || p;
 type Theme = "system" | "light" | "sepia" | "dark";
 const THEMES: Theme[] = ["system", "light", "sepia", "dark"];
 const THEME_STORAGE_KEY = "mde:theme";
+const WORKSPACE_STORAGE_KEY = "mde:workspace";
+const SIDEBAR_OPEN_STORAGE_KEY = "mde:sidebar-open";
 const THEME_LABEL: Record<Theme, string> = {
   system: "System",
   light: "Light",
@@ -35,11 +39,49 @@ function applyTheme(t: Theme) {
   document.documentElement.dataset.theme = t;
 }
 
+function readStoredWorkspace(): string | null {
+  try {
+    return localStorage.getItem(WORKSPACE_STORAGE_KEY);
+  } catch {
+    return null;
+  }
+}
+
+function writeStoredWorkspace(p: string | null) {
+  try {
+    if (p) localStorage.setItem(WORKSPACE_STORAGE_KEY, p);
+    else localStorage.removeItem(WORKSPACE_STORAGE_KEY);
+  } catch {
+    // ignore
+  }
+}
+
+function readStoredSidebarOpen(): boolean {
+  try {
+    const v = localStorage.getItem(SIDEBAR_OPEN_STORAGE_KEY);
+    if (v === "1") return true;
+    if (v === "0") return false;
+  } catch {
+    // ignore
+  }
+  return true;
+}
+
+function writeStoredSidebarOpen(open: boolean) {
+  try {
+    localStorage.setItem(SIDEBAR_OPEN_STORAGE_KEY, open ? "1" : "0");
+  } catch {
+    // ignore
+  }
+}
+
 export default function App() {
   const [path, setPath] = useState<string | null>(null);
   const [initialMarkdown, setInitialMarkdown] = useState<string>("");
   const [dirty, setDirty] = useState(false);
   const [ready, setReady] = useState(false);
+  const [workspaceRoot, setWorkspaceRoot] = useState<string | null>(null);
+  const [sidebarOpen, setSidebarOpen] = useState<boolean>(() => readStoredSidebarOpen());
   const editorRef = useRef<EditorHandle>(null);
   const currentMarkdownRef = useRef<string>("");
   const lastSavedRef = useRef<string>("");
@@ -60,6 +102,10 @@ export default function App() {
       // ignore
     }
   }, [theme]);
+
+  useEffect(() => {
+    writeStoredSidebarOpen(sidebarOpen);
+  }, [sidebarOpen]);
 
   const writeToDisk = useCallback(async (target: string, contents: string) => {
     try {
@@ -85,8 +131,22 @@ export default function App() {
     }, AUTOSAVE_DEBOUNCE_MS);
   }, [writeToDisk]);
 
+  const flushPendingAutosave = useCallback(() => {
+    if (autosaveTimerRef.current != null) {
+      window.clearTimeout(autosaveTimerRef.current);
+      autosaveTimerRef.current = null;
+    }
+    const target = pathRef.current;
+    if (!target) return;
+    const snapshot = currentMarkdownRef.current;
+    if (snapshot === lastSavedRef.current) return;
+    void writeToDisk(target, snapshot);
+  }, [writeToDisk]);
+
   const loadFile = useCallback(async (p: string) => {
     try {
+      // Flush any pending autosave on the previous file before switching.
+      flushPendingAutosave();
       const text = await invoke<string>("read_file", { path: p });
       if (autosaveTimerRef.current != null) {
         window.clearTimeout(autosaveTimerRef.current);
@@ -102,21 +162,68 @@ export default function App() {
       console.error(e);
       alert(`Could not open ${p}\n${e}`);
     }
+  }, [flushPendingAutosave]);
+
+  const setWorkspace = useCallback((root: string | null) => {
+    setWorkspaceRoot(root);
+    writeStoredWorkspace(root);
+    if (root) setSidebarOpen(true);
+  }, []);
+
+  const openFolderPicker = useCallback(async () => {
+    try {
+      const chosen = await openDialog({ directory: true, multiple: false });
+      if (typeof chosen === "string") setWorkspace(chosen);
+    } catch (e) {
+      console.error("open folder failed", e);
+    }
+  }, [setWorkspace]);
+
+  const openFilePicker = useCallback(async () => {
+    try {
+      const chosen = await openDialog({
+        multiple: false,
+        filters: [{ name: "Markdown", extensions: ["md", "markdown", "mdown", "mkd"] }],
+      });
+      if (typeof chosen === "string") await loadFile(chosen);
+    } catch (e) {
+      console.error("open file failed", e);
+    }
+  }, [loadFile]);
+
+  const revealInFinder = useCallback(async (target: string) => {
+    try {
+      await invoke("reveal_in_finder", { path: target });
+    } catch (e) {
+      console.error("reveal failed", e);
+    }
   }, []);
 
   useEffect(() => {
     (async () => {
-      const pending = await invoke<string | null>("take_pending_open");
-      if (pending) await loadFile(pending);
+      const pendingFolder = await invoke<string | null>("take_pending_folder");
+      const pendingFile = await invoke<string | null>("take_pending_open");
+      if (pendingFolder) {
+        setWorkspace(pendingFolder);
+      } else if (!pendingFile) {
+        // Bare launch — restore the last workspace if there was one.
+        const stored = readStoredWorkspace();
+        if (stored) setWorkspaceRoot(stored);
+      }
+      if (pendingFile) await loadFile(pendingFile);
       setReady(true);
     })();
-    const un = listen<OpenFilePayload>("open-file", (e) => {
+    const unFile = listen<OpenFilePayload>("open-file", (e) => {
       void loadFile(e.payload.path);
     });
+    const unFolder = listen<OpenFolderPayload>("open-folder", (e) => {
+      setWorkspace(e.payload.path);
+    });
     return () => {
-      void un.then((f) => f());
+      void unFile.then((f) => f());
+      void unFolder.then((f) => f());
     };
-  }, [loadFile]);
+  }, [loadFile, setWorkspace]);
 
   const onMarkdownChange = useCallback(
     (md: string) => {
@@ -156,14 +263,25 @@ export default function App() {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const mod = e.metaKey || e.ctrlKey;
-      if (mod && !e.shiftKey && e.key.toLowerCase() === "s") {
+      if (!mod) return;
+      const k = e.key.toLowerCase();
+      if (k === "s" && !e.shiftKey) {
         e.preventDefault();
         void handleSave();
+      } else if (k === "o" && e.shiftKey) {
+        e.preventDefault();
+        void openFolderPicker();
+      } else if (k === "o" && !e.shiftKey) {
+        e.preventDefault();
+        void openFilePicker();
+      } else if (k === "\\") {
+        e.preventDefault();
+        if (workspaceRoot) setSidebarOpen((v) => !v);
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [handleSave]);
+  }, [handleSave, openFolderPicker, openFilePicker, workspaceRoot]);
 
   useEffect(() => {
     const title = path ? `${dirty ? "● " : ""}${basename(path)}` : "MDE";
@@ -172,26 +290,68 @@ export default function App() {
 
   if (!ready) return null;
 
+  const showSidebar = workspaceRoot != null && sidebarOpen;
+  const showWelcome = path == null && workspaceRoot == null;
+
   return (
-    <div className="app">
+    <div className={`app ${showSidebar ? "with-sidebar" : ""}`}>
       <div className="drag-strip" data-tauri-drag-region />
-      <FileLabel path={path} dirty={dirty} />
-      <main className="editor-wrap">
-        <Editor
-          ref={editorRef}
-          key={path ?? "__empty__"}
-          initialMarkdown={initialMarkdown}
-          onChange={onMarkdownChange}
+      {workspaceRoot && (
+        <button
+          className="sidebar-toggle"
+          onClick={() => setSidebarOpen((v) => !v)}
+          title={sidebarOpen ? "Hide sidebar (⌘\\)" : "Show sidebar (⌘\\)"}
+          aria-label="Toggle sidebar"
+          aria-pressed={sidebarOpen}
+        >
+          <SidebarIcon />
+        </button>
+      )}
+      <FileLabel path={path} dirty={dirty} hasSidebarToggle={workspaceRoot != null} />
+      {showSidebar && workspaceRoot && (
+        <Sidebar
+          root={workspaceRoot}
+          currentPath={path}
+          onOpenFile={loadFile}
+          onOpenFolder={openFolderPicker}
+          onOpenFilePicker={openFilePicker}
+          onCloseWorkspace={() => setWorkspace(null)}
+          onRevealInFinder={revealInFinder}
         />
+      )}
+      <main className="editor-wrap">
+        {showWelcome ? (
+          <Welcome onOpenFile={openFilePicker} onOpenFolder={openFolderPicker} />
+        ) : (
+          <Editor
+            ref={editorRef}
+            key={path ?? "__empty__"}
+            initialMarkdown={initialMarkdown}
+            onChange={onMarkdownChange}
+          />
+        )}
       </main>
-      <Settings theme={theme} onChange={setTheme} />
+      <Settings
+        theme={theme}
+        onChange={setTheme}
+        onOpenFile={openFilePicker}
+        onOpenFolder={openFolderPicker}
+      />
     </div>
   );
 }
 
 /* ---------- Subviews ---------- */
 
-function FileLabel({ path, dirty }: { path: string | null; dirty: boolean }) {
+function FileLabel({
+  path,
+  dirty,
+  hasSidebarToggle,
+}: {
+  path: string | null;
+  dirty: boolean;
+  hasSidebarToggle: boolean;
+}) {
   const [copied, setCopied] = useState(false);
   const onCopy = useCallback(async () => {
     if (!path) return;
@@ -204,21 +364,53 @@ function FileLabel({ path, dirty }: { path: string | null; dirty: boolean }) {
     }
   }, [path]);
 
-  const label = path ? basename(path) : "Untitled";
+  if (!path) return null;
+  const label = basename(path);
   return (
-    <div className="file-label" title={path ?? "Untitled"}>
+    <div
+      className={`file-label ${hasSidebarToggle ? "with-toggle" : ""}`}
+      title={path}
+    >
       <span className="file-label-name">{label}</span>
       {dirty && <span className="file-label-dot" aria-hidden>●</span>}
-      {path && (
-        <button
-          className="file-label-copy"
-          onClick={onCopy}
-          title="Copy full path"
-          aria-label="Copy full file path"
-        >
-          {copied ? <CheckIcon /> : <CopyIcon />}
-        </button>
-      )}
+      <button
+        className="file-label-copy"
+        onClick={onCopy}
+        title="Copy full path"
+        aria-label="Copy full file path"
+      >
+        {copied ? <CheckIcon /> : <CopyIcon />}
+      </button>
+    </div>
+  );
+}
+
+function Welcome({
+  onOpenFile,
+  onOpenFolder,
+}: {
+  onOpenFile: () => void;
+  onOpenFolder: () => void;
+}) {
+  return (
+    <div className="welcome">
+      <div className="welcome-card">
+        <div className="welcome-title">MDE</div>
+        <div className="welcome-subtitle">A minimal markdown editor</div>
+        <div className="welcome-actions">
+          <button className="welcome-button" onClick={onOpenFile}>
+            Open file
+            <span className="welcome-shortcut">⌘O</span>
+          </button>
+          <button className="welcome-button" onClick={onOpenFolder}>
+            Open folder
+            <span className="welcome-shortcut">⌘⇧O</span>
+          </button>
+        </div>
+        <div className="welcome-hint">
+          Or just start typing — ⌘S saves to a new file.
+        </div>
+      </div>
     </div>
   );
 }
@@ -226,9 +418,13 @@ function FileLabel({ path, dirty }: { path: string | null; dirty: boolean }) {
 function Settings({
   theme,
   onChange,
+  onOpenFile,
+  onOpenFolder,
 }: {
   theme: Theme;
   onChange: (t: Theme) => void;
+  onOpenFile: () => void;
+  onOpenFolder: () => void;
 }) {
   const [open, setOpen] = useState(false);
   const wrapRef = useRef<HTMLDivElement>(null);
@@ -255,6 +451,32 @@ function Settings({
     <div ref={wrapRef} className="settings-wrap">
       {open && (
         <div className="settings-popover" role="menu" aria-label="Settings">
+          <div className="settings-section-label">File</div>
+          <button
+            role="menuitem"
+            className="settings-option"
+            onClick={() => {
+              setOpen(false);
+              onOpenFile();
+            }}
+          >
+            <span className="settings-option-check" />
+            <span className="settings-option-label">Open file…</span>
+            <span className="settings-option-kbd">⌘O</span>
+          </button>
+          <button
+            role="menuitem"
+            className="settings-option"
+            onClick={() => {
+              setOpen(false);
+              onOpenFolder();
+            }}
+          >
+            <span className="settings-option-check" />
+            <span className="settings-option-label">Open folder…</span>
+            <span className="settings-option-kbd">⌘⇧O</span>
+          </button>
+          <div className="settings-divider" />
           <div className="settings-section-label">Appearance</div>
           {THEMES.map((t) => (
             <button
@@ -342,6 +564,25 @@ function CheckIcon() {
       aria-hidden
     >
       <polyline points="20 6 9 17 4 12" />
+    </svg>
+  );
+}
+
+function SidebarIcon() {
+  return (
+    <svg
+      width="14"
+      height="14"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden
+    >
+      <rect x="3" y="4" width="18" height="16" rx="2" />
+      <line x1="9" y1="4" x2="9" y2="20" />
     </svg>
   );
 }

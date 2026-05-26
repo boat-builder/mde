@@ -4,13 +4,14 @@ A minimal Tauri 2 desktop app for editing markdown files with a Notion-style WYS
 
 ## What it does
 
-- Open one `.md` file at a time
+- Edit one `.md` file at a time, optionally inside a folder workspace with a
+  collapsible file sidebar
 - Live block-style editing: type `# foo` and it becomes an H1, type `**bold**` and it bolds inline, slash menu for blocks, drag handles, etc.
 - Save back to the same `.md` file (lossless markdown round-trip via remark)
 - Launches from:
-  - Double-click on a `.md` file in Finder
-  - `mde path/to/file.md` from the terminal (via a shim)
-  - Existing window if already running (single-instance, file routes to the open window)
+  - Double-click on a `.md` file (or a folder) in Finder
+  - `mde path/to/file.md` or `mde path/to/dir` from the terminal (via a shim)
+  - Existing window if already running (single-instance, the path routes to the open window)
 
 ## Develop
 
@@ -65,12 +66,14 @@ Then:
 ```sh
 mde notes.md
 mde ~/projects/README.md
+mde ~/notes                # opens a folder as a workspace
+mde                        # opens an empty editor (welcome screen)
 ```
 
 ## Architecture
 
 - **Frontend**: React + Vite + Milkdown Crepe (`@milkdown/crepe`). Crepe is Milkdown's batteries-included preset — slash menu, block handles, toolbar, Notion-like keyboard shortcuts.
-- **Backend**: Tauri 2 (Rust). Two commands: `read_file` and `write_file`. `RunEvent::Opened` handles macOS file-open events (double-click on `.md`). `tauri-plugin-single-instance` forwards CLI argv from a second `mde` invocation into the running window.
+- **Backend**: Tauri 2 (Rust). Commands: `read_file`, `write_file`, `list_md_tree` (walks a directory, returning a pruned tree of folders that contain markdown), `reveal_in_finder`, plus pending-open hand-off for the initial CLI args. `RunEvent::Opened` handles macOS open events for both files and folders. `tauri-plugin-single-instance` forwards CLI argv from a second `mde` invocation into the running window.
 - **File association**: Declared in `src-tauri/tauri.conf.json` under `bundle.fileAssociations`. Tauri injects `CFBundleDocumentTypes` into `Info.plist` at bundle time.
 - **CLI**: `scripts/install-cli.sh` writes a small shell shim that calls `open -a MDE --args <files>`. macOS routes argv through LaunchServices to the bundled app.
 
@@ -83,19 +86,31 @@ Save dialog).
 ## Keyboard
 
 - `⌘S` — force save now (or Save As if the file is untitled)
+- `⌘O` — open a file
+- `⌘⇧O` — open a folder as a workspace
+- `⌘\` — toggle the sidebar (only when a workspace is open)
 - `⌘Z` / `⌘⇧Z` — undo / redo (also `⌘Y` for redo)
 - All Milkdown/Crepe inline-format shortcuts: `⌘B` bold, `⌘I` italic, `⌘K` link, etc.
 - `/` on a new line — slash menu (headings, lists, code blocks, tables, …)
 
-To open a file: double-click a `.md` in Finder, or `mde path/to/file.md` from
-the terminal.
-
 ## UI elements
 
-- **Top-left** — the filename (muted, small). Hover it to reveal a copy
-  button that copies the full file path to the clipboard.
-- **Bottom-left** — a small gear button opens a settings popover. Currently
-  exposes the appearance picker.
+- **Welcome screen** — shown when MDE opens with no file and no workspace.
+  Buttons for *Open file* and *Open folder*; just start typing if you want a
+  scratch buffer.
+- **Sidebar** (when a workspace is open) — collapsible tree of `.md` files
+  under the workspace root. Folders that contain no markdown are hidden. The
+  folder name at the top is a menu: *Open folder…*, *Open file…*,
+  *Reveal in Finder*, *Close workspace*. A refresh button next to it re-scans
+  the workspace, and the tree auto-refreshes on window focus.
+- **Top-left** — sidebar toggle (when a workspace is open) and the filename
+  (muted, small). Hover the filename to reveal a copy button that copies the
+  full file path to the clipboard.
+- **Bottom-left** — a small gear button opens a settings popover with file
+  actions and the appearance picker.
+
+The last opened workspace and sidebar visibility are remembered in
+`localStorage` and restored on next launch.
 
 ## Themes
 
