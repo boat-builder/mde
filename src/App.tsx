@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { save as saveDialog, open as openDialog } from "@tauri-apps/plugin-dialog";
-import Editor, { EditorHandle } from "./Editor";
+import Editor from "./Editor";
 import Sidebar from "./Sidebar";
 
 type OpenFilePayload = { path: string };
@@ -112,7 +112,6 @@ export default function App() {
   const [sidebarOpen, setSidebarOpen] = useState<boolean>(() => readStoredSidebarOpen());
   const [recents, setRecents] = useState<RecentEntry[]>(() => readStoredRecents());
   const [docEmpty, setDocEmpty] = useState(true);
-  const editorRef = useRef<EditorHandle>(null);
   const currentMarkdownRef = useRef<string>("");
   const lastSavedRef = useRef<string>("");
   const baselineCapturedRef = useRef<boolean>(false);
@@ -546,7 +545,6 @@ export default function App() {
       )}
       <main className="editor-wrap">
         <Editor
-          ref={editorRef}
           key={loadKey}
           initialMarkdown={initialMarkdown}
           onChange={onMarkdownChange}
