@@ -1,26 +1,15 @@
-import { forwardRef, useImperativeHandle, useRef } from "react";
 import { Crepe } from "@milkdown/crepe";
 import { Milkdown, MilkdownProvider, useEditor } from "@milkdown/react";
 
 import "@milkdown/crepe/theme/common/style.css";
 import "@milkdown/crepe/theme/frame.css";
 
-export type EditorHandle = {
-  getMarkdown: () => string;
-};
-
 type Props = {
   initialMarkdown: string;
   onChange: (markdown: string) => void;
 };
 
-function MilkdownInner({
-  initialMarkdown,
-  onChange,
-  handleRef,
-}: Props & { handleRef: React.MutableRefObject<EditorHandle | null> }) {
-  const crepeRef = useRef<Crepe | null>(null);
-
+function MilkdownInner({ initialMarkdown, onChange }: Props) {
   useEditor((root) => {
     const crepe = new Crepe({
       root,
@@ -37,26 +26,16 @@ function MilkdownInner({
         onChange(markdown);
       });
     });
-    crepeRef.current = crepe;
-    handleRef.current = {
-      getMarkdown: () => crepe.getMarkdown(),
-    };
     return crepe;
   }, []);
 
   return <Milkdown />;
 }
 
-const Editor = forwardRef<EditorHandle, Props>(function Editor(props, ref) {
-  const handleRef = useRef<EditorHandle | null>(null);
-  useImperativeHandle(ref, () => ({
-    getMarkdown: () => handleRef.current?.getMarkdown() ?? "",
-  }));
+export default function Editor(props: Props) {
   return (
     <MilkdownProvider>
-      <MilkdownInner {...props} handleRef={handleRef} />
+      <MilkdownInner {...props} />
     </MilkdownProvider>
   );
-});
-
-export default Editor;
+}

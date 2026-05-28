@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { save as saveDialog, open as openDialog } from "@tauri-apps/plugin-dialog";
-import Editor, { EditorHandle } from "./Editor";
+import Editor from "./Editor";
 import Sidebar from "./Sidebar";
 
 type OpenFilePayload = { path: string };
@@ -23,8 +23,11 @@ const basename = (p: string) => p.split(/[\\/]/).pop() || p;
 type Theme = "system" | "light" | "sepia" | "dark";
 const THEMES: Theme[] = ["system", "light", "sepia", "dark"];
 const THEME_STORAGE_KEY = "mde:theme";
-const WORKSPACE_STORAGE_KEY = "mde:workspace";
 const SIDEBAR_OPEN_STORAGE_KEY = "mde:sidebar-open";
+const RECENTS_STORAGE_KEY = "mde:recents";
+const RECENTS_MAX = 8;
+
+type RecentEntry = { path: string; kind: "file" | "folder" };
 const THEME_LABEL: Record<Theme, string> = {
   system: "System",
   light: "Light",
@@ -56,23 +59,6 @@ function isWriteError(e: unknown): e is WriteErrorPayload {
   );
 }
 
-function readStoredWorkspace(): string | null {
-  try {
-    return localStorage.getItem(WORKSPACE_STORAGE_KEY);
-  } catch {
-    return null;
-  }
-}
-
-function writeStoredWorkspace(p: string | null) {
-  try {
-    if (p) localStorage.setItem(WORKSPACE_STORAGE_KEY, p);
-    else localStorage.removeItem(WORKSPACE_STORAGE_KEY);
-  } catch {
-    // ignore
-  }
-}
-
 function readStoredSidebarOpen(): boolean {
   try {
     const v = localStorage.getItem(SIDEBAR_OPEN_STORAGE_KEY);
@@ -92,6 +78,29 @@ function writeStoredSidebarOpen(open: boolean) {
   }
 }
 
+function readStoredRecents(): RecentEntry[] {
+  try {
+    const raw = localStorage.getItem(RECENTS_STORAGE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter(
+      (r): r is RecentEntry =>
+        r && typeof r.path === "string" && (r.kind === "file" || r.kind === "folder"),
+    );
+  } catch {
+    return [];
+  }
+}
+
+function writeStoredRecents(entries: RecentEntry[]) {
+  try {
+    localStorage.setItem(RECENTS_STORAGE_KEY, JSON.stringify(entries));
+  } catch {
+    // ignore
+  }
+}
+
 export default function App() {
   const [path, setPath] = useState<string | null>(null);
   const [initialMarkdown, setInitialMarkdown] = useState<string>("");
@@ -101,7 +110,8 @@ export default function App() {
   const [conflict, setConflict] = useState<Conflict | null>(null);
   const [workspaceRoot, setWorkspaceRoot] = useState<string | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState<boolean>(() => readStoredSidebarOpen());
-  const editorRef = useRef<EditorHandle>(null);
+  const [recents, setRecents] = useState<RecentEntry[]>(() => readStoredRecents());
+  const [docEmpty, setDocEmpty] = useState(true);
   const currentMarkdownRef = useRef<string>("");
   const lastSavedRef = useRef<string>("");
   const baselineCapturedRef = useRef<boolean>(false);
@@ -189,6 +199,17 @@ export default function App() {
     void writeToDisk(target, snapshot);
   }, [writeToDisk]);
 
+  const addRecent = useCallback((p: string, kind: "file" | "folder") => {
+    setRecents((prev) => {
+      const next = [{ path: p, kind }, ...prev.filter((r) => r.path !== p)].slice(
+        0,
+        RECENTS_MAX,
+      );
+      writeStoredRecents(next);
+      return next;
+    });
+  }, []);
+
   const loadFile = useCallback(async (p: string) => {
     try {
       // Flush any pending autosave on the previous file before switching.
@@ -207,6 +228,7 @@ export default function App() {
       setDirty(false);
       setConflict(null);
       setLoadKey((k) => k + 1);
+      addRecent(p, "file");
       try {
         await invoke("watch_file", { path: p });
       } catch (e) {
@@ -216,13 +238,13 @@ export default function App() {
       console.error(e);
       alert(`Could not open ${p}\n${e}`);
     }
-  }, [flushPendingAutosave]);
+  }, [flushPendingAutosave, addRecent]);
 
-  const setWorkspace = useCallback((root: string | null) => {
+  const setWorkspace = useCallback((root: string) => {
     setWorkspaceRoot(root);
-    writeStoredWorkspace(root);
-    if (root) setSidebarOpen(true);
-  }, []);
+    setSidebarOpen(true);
+    addRecent(root, "folder");
+  }, [addRecent]);
 
   const openFolderPicker = useCallback(async () => {
     try {
@@ -244,6 +266,14 @@ export default function App() {
       console.error("open file failed", e);
     }
   }, [loadFile]);
+
+  const openRecent = useCallback(
+    (r: RecentEntry) => {
+      if (r.kind === "folder") setWorkspace(r.path);
+      else void loadFile(r.path);
+    },
+    [setWorkspace, loadFile],
+  );
 
   const revealInFinder = useCallback(async (target: string) => {
     try {
@@ -316,6 +346,7 @@ export default function App() {
     lastSavedRef.current = contents;
     snapshotRef.current = snapshot;
     setDirty(false);
+    setDocEmpty(contents.trim().length === 0);
     setConflict(null);
     setLoadKey((k) => k + 1);
   }, [flushPendingAutosave]);
@@ -344,6 +375,7 @@ export default function App() {
     lastSavedRef.current = "";
     setInitialMarkdown("");
     setDirty(false);
+    setDocEmpty(true);
     setLoadKey((k) => k + 1);
   }, []);
 
@@ -356,13 +388,7 @@ export default function App() {
       }
       const pendingFolder = await invoke<string | null>("take_pending_folder");
       const pendingFile = await invoke<string | null>("take_pending_open");
-      if (pendingFolder) {
-        setWorkspace(pendingFolder);
-      } else if (!pendingFile) {
-        // Bare launch — restore the last workspace if there was one.
-        const stored = readStoredWorkspace();
-        if (stored) setWorkspaceRoot(stored);
-      }
+      if (pendingFolder) setWorkspace(pendingFolder);
       if (pendingFile) await loadFile(pendingFile);
       else await enterScratch(); // restore the scratchpad (hot-exit) or start blank
       setReady(true);
@@ -396,6 +422,7 @@ export default function App() {
   const onMarkdownChange = useCallback(
     (md: string) => {
       currentMarkdownRef.current = md;
+      setDocEmpty(md.trim().length === 0);
       if (!baselineCapturedRef.current) {
         lastSavedRef.current = md;
         baselineCapturedRef.current = true;
@@ -518,20 +545,29 @@ export default function App() {
       )}
       <main className="editor-wrap">
         <Editor
-          ref={editorRef}
           key={loadKey}
           initialMarkdown={initialMarkdown}
           onChange={onMarkdownChange}
         />
+        {isScratch && docEmpty && (
+          <ScratchEmptyState
+            recents={recents}
+            onOpenFile={openFilePicker}
+            onOpenFolder={openFolderPicker}
+            onOpenRecent={openRecent}
+          />
+        )}
       </main>
       <Settings
         theme={theme}
         onChange={setTheme}
         isScratch={isScratch}
+        recents={recents}
         onNewNote={() => void enterScratch()}
         onDiscard={() => void discardScratch()}
         onOpenFile={openFilePicker}
         onOpenFolder={openFolderPicker}
+        onOpenRecent={openRecent}
       />
     </div>
   );
@@ -619,18 +655,22 @@ function Settings({
   theme,
   onChange,
   isScratch,
+  recents,
   onNewNote,
   onDiscard,
   onOpenFile,
   onOpenFolder,
+  onOpenRecent,
 }: {
   theme: Theme;
   onChange: (t: Theme) => void;
   isScratch: boolean;
+  recents: RecentEntry[];
   onNewNote: () => void;
   onDiscard: () => void;
   onOpenFile: () => void;
   onOpenFolder: () => void;
+  onOpenRecent: (r: RecentEntry) => void;
 }) {
   const [open, setOpen] = useState(false);
   const wrapRef = useRef<HTMLDivElement>(null);
@@ -707,6 +747,31 @@ function Settings({
             <span className="settings-option-label">Open folder…</span>
             <span className="settings-option-kbd">⌘⇧O</span>
           </button>
+          {recents.length > 0 && (
+            <>
+              <div className="settings-divider" />
+              <div className="settings-section-label">Recent</div>
+              <div className="settings-recents">
+                {recents.map((r) => (
+                  <button
+                    key={r.path}
+                    role="menuitem"
+                    className="settings-option"
+                    title={r.path}
+                    onClick={() => {
+                      setOpen(false);
+                      onOpenRecent(r);
+                    }}
+                  >
+                    <span className="settings-option-check">
+                      {r.kind === "folder" ? <FolderIcon /> : <FileIcon />}
+                    </span>
+                    <span className="settings-option-label">{basename(r.path)}</span>
+                  </button>
+                ))}
+              </div>
+            </>
+          )}
           <div className="settings-divider" />
           <div className="settings-section-label">Appearance</div>
           {THEMES.map((t) => (
@@ -737,6 +802,54 @@ function Settings({
       >
         <GearIcon />
       </button>
+    </div>
+  );
+}
+
+function ScratchEmptyState({
+  recents,
+  onOpenFile,
+  onOpenFolder,
+  onOpenRecent,
+}: {
+  recents: RecentEntry[];
+  onOpenFile: () => void;
+  onOpenFolder: () => void;
+  onOpenRecent: (r: RecentEntry) => void;
+}) {
+  return (
+    <div className="scratch-empty" aria-hidden={false}>
+      <div className="scratch-empty-card">
+        <div className="scratch-empty-hint">Start typing to jot a note</div>
+        <div className="scratch-empty-actions">
+          <button className="scratch-empty-button" onClick={onOpenFile}>
+            <FileIcon />
+            <span>Open file</span>
+            <span className="scratch-empty-kbd">⌘O</span>
+          </button>
+          <button className="scratch-empty-button" onClick={onOpenFolder}>
+            <FolderIcon />
+            <span>Open folder</span>
+            <span className="scratch-empty-kbd">⌘⇧O</span>
+          </button>
+        </div>
+        {recents.length > 0 && (
+          <div className="scratch-empty-recents">
+            <div className="scratch-empty-recents-label">Recent</div>
+            {recents.map((r) => (
+              <button
+                key={r.path}
+                className="scratch-empty-recent"
+                title={r.path}
+                onClick={() => onOpenRecent(r)}
+              >
+                {r.kind === "folder" ? <FolderIcon /> : <FileIcon />}
+                <span className="scratch-empty-recent-name">{basename(r.path)}</span>
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -777,6 +890,43 @@ function CopyIcon() {
     >
       <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
       <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+    </svg>
+  );
+}
+
+function FileIcon() {
+  return (
+    <svg
+      width="13"
+      height="13"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden
+    >
+      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+      <polyline points="14 2 14 8 20 8" />
+    </svg>
+  );
+}
+
+function FolderIcon() {
+  return (
+    <svg
+      width="13"
+      height="13"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden
+    >
+      <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
     </svg>
   );
 }
