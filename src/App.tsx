@@ -241,12 +241,10 @@ export default function App() {
     }
   }, [flushPendingAutosave, addRecent]);
 
-  const setWorkspace = useCallback((root: string | null) => {
+  const setWorkspace = useCallback((root: string) => {
     setWorkspaceRoot(root);
-    if (root) {
-      setSidebarOpen(true);
-      addRecent(root, "folder");
-    }
+    setSidebarOpen(true);
+    addRecent(root, "folder");
   }, [addRecent]);
 
   const openFolderPicker = useCallback(async () => {
