@@ -126,6 +126,7 @@ body,
 
 .editor-wrap {
   grid-area: main;
+  position: relative;
   overflow-y: auto;
   background: var(--app-surface);
   min-width: 0;
@@ -539,6 +540,129 @@ body,
   height: 1px;
   background: var(--app-border);
   margin: 4px 0;
+}
+
+.settings-recents {
+  max-height: 196px;
+  overflow-y: auto;
+}
+
+.settings-recents .settings-option-check {
+  color: var(--app-text-muted);
+}
+
+/* ---------- Scratchpad empty state ---------- */
+
+.scratch-empty {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  pointer-events: none; /* clicks pass through to the editor; only buttons are live */
+}
+
+.scratch-empty-card {
+  pointer-events: auto; /* the card is interactive; the area around it stays type-through */
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  width: 100%;
+  max-width: 320px;
+}
+
+.scratch-empty-hint {
+  font-size: 13px;
+  color: var(--app-text-muted);
+  text-align: center;
+}
+
+.scratch-empty-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.scratch-empty-button {
+  pointer-events: auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  padding: 9px 12px;
+  font: inherit;
+  font-size: 13px;
+  border: 1px solid var(--app-border);
+  border-radius: 8px;
+  background: var(--app-bg);
+  color: var(--app-text);
+  cursor: pointer;
+  transition: background 0.12s, border-color 0.12s;
+}
+
+.scratch-empty-button:hover {
+  background: var(--app-hover);
+}
+
+.scratch-empty-button span:nth-of-type(1) {
+  flex: 1;
+  text-align: left;
+}
+
+.scratch-empty-kbd {
+  font-size: 11px;
+  color: var(--app-text-muted);
+  font-feature-settings: "tnum" 1;
+}
+
+.scratch-empty-recents {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  margin-top: 2px;
+  max-height: 220px;
+  overflow-y: auto;
+}
+
+.scratch-empty-recents-label {
+  padding: 4px 6px;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--app-text-muted);
+}
+
+.scratch-empty-recent {
+  pointer-events: auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 8px;
+  font: inherit;
+  font-size: 13px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--app-text);
+  cursor: pointer;
+  text-align: left;
+}
+
+.scratch-empty-recent:hover {
+  background: var(--app-hover);
+}
+
+.scratch-empty-recent svg {
+  color: var(--app-text-muted);
+  flex-shrink: 0;
+}
+
+.scratch-empty-recent-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* ---------- Sidebar toggle (top-left, next to traffic lights) ---------- */
