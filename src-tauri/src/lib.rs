@@ -386,6 +386,9 @@ fn classify_arg(arg: &str) -> Option<CliPath> {
     } else {
         return None;
     };
+    // Resolve relative args like "." to an absolute path so the UI can show a
+    // real directory name. Falls back to the original for nonexistent paths.
+    let pb = std::fs::canonicalize(&pb).unwrap_or(pb);
     if pb.is_dir() {
         Some(CliPath::Folder(pb))
     } else {

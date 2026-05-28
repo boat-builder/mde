@@ -11,7 +11,6 @@ type Props = {
   onOpenFile: (path: string) => void;
   onOpenFolder: () => void;
   onOpenFilePicker: () => void;
-  onCloseWorkspace: () => void;
   onRevealInFinder: (path: string) => void;
 };
 
@@ -23,7 +22,6 @@ export default function Sidebar({
   onOpenFile,
   onOpenFolder,
   onOpenFilePicker,
-  onCloseWorkspace,
   onRevealInFinder,
 }: Props) {
   const [tree, setTree] = useState<TreeNode | null>(null);
@@ -76,7 +74,6 @@ export default function Sidebar({
         onOpenFolder={onOpenFolder}
         onOpenFile={onOpenFilePicker}
         onRevealInFinder={() => onRevealInFinder(root)}
-        onCloseWorkspace={onCloseWorkspace}
         onRefresh={() => void refresh()}
       />
       <div className="sidebar-body">
@@ -114,7 +111,6 @@ function SidebarHeader({
   onOpenFolder,
   onOpenFile,
   onRevealInFinder,
-  onCloseWorkspace,
   onRefresh,
 }: {
   name: string;
@@ -123,7 +119,6 @@ function SidebarHeader({
   onOpenFolder: () => void;
   onOpenFile: () => void;
   onRevealInFinder: () => void;
-  onCloseWorkspace: () => void;
   onRefresh: () => void;
 }) {
   const wrapRef = useRef<HTMLDivElement>(null);
@@ -197,17 +192,6 @@ function SidebarHeader({
             }}
           >
             Reveal in Finder
-          </button>
-          <div className="sidebar-menu-sep" />
-          <button
-            role="menuitem"
-            className="sidebar-menu-item"
-            onClick={() => {
-              setMenuOpen(false);
-              onCloseWorkspace();
-            }}
-          >
-            Close workspace
           </button>
         </div>
       )}

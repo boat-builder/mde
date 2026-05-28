@@ -507,7 +507,6 @@ export default function App() {
           onOpenFile={loadFile}
           onOpenFolder={openFolderPicker}
           onOpenFilePicker={openFilePicker}
-          onCloseWorkspace={() => setWorkspace(null)}
           onRevealInFinder={revealInFinder}
         />
       )}
