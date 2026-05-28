@@ -395,6 +395,7 @@ body,
   bottom: 40px;
   left: 0;
   min-width: 168px;
+  width: max-content;
   padding: 6px;
   background: var(--app-bg);
   border: 1px solid var(--app-border);
@@ -531,6 +532,7 @@ body,
 
 .settings-option .settings-option-label {
   flex: 1;
+  white-space: nowrap;
 }
 
 .settings-divider {

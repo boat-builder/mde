@@ -106,6 +106,7 @@ export default function App() {
   const lastSavedRef = useRef<string>("");
   const baselineCapturedRef = useRef<boolean>(false);
   const pathRef = useRef<string | null>(null);
+  const scratchPathRef = useRef<string | null>(null);
   const snapshotRef = useRef<FileSnapshot | null>(null);
   const autosaveTimerRef = useRef<number | null>(null);
   const dirtyRef = useRef(false);
@@ -144,10 +145,15 @@ export default function App() {
         contents,
         expected: snapshotRef.current,
       });
+      // The active document may have switched while this write was in flight
+      // (e.g. a flush of the previous doc resolving after entering the
+      // scratchpad). Only commit baseline state if `target` is still current.
+      if ((pathRef.current ?? scratchPathRef.current) !== target) return;
       snapshotRef.current = newSnapshot;
       lastSavedRef.current = contents;
       if (currentMarkdownRef.current === contents) setDirty(false);
     } catch (e) {
+      if ((pathRef.current ?? scratchPathRef.current) !== target) return;
       if (isWriteError(e) && e.kind === "conflict") {
         setConflict({ diskSnapshot: e.current });
       } else {
@@ -163,7 +169,7 @@ export default function App() {
     autosaveTimerRef.current = window.setTimeout(() => {
       autosaveTimerRef.current = null;
       if (conflictRef.current) return; // pause autosave while a conflict is unresolved
-      const target = pathRef.current;
+      const target = pathRef.current ?? scratchPathRef.current;
       if (!target) return;
       const snapshot = currentMarkdownRef.current;
       if (snapshot === lastSavedRef.current) return;
@@ -176,7 +182,7 @@ export default function App() {
       window.clearTimeout(autosaveTimerRef.current);
       autosaveTimerRef.current = null;
     }
-    const target = pathRef.current;
+    const target = pathRef.current ?? scratchPathRef.current;
     if (!target) return;
     const snapshot = currentMarkdownRef.current;
     if (snapshot === lastSavedRef.current) return;
@@ -278,8 +284,76 @@ export default function App() {
     }
   }, [scheduleAutosave]);
 
+  // Switch the editor to the app-managed scratchpad (the "untitled" buffer).
+  // Non-destructive: restores whatever was last jotted there.
+  const enterScratch = useCallback(async () => {
+    const scratch = scratchPathRef.current;
+    if (!scratch) return;
+    flushPendingAutosave(); // persist the outgoing doc before switching
+    if (autosaveTimerRef.current != null) {
+      window.clearTimeout(autosaveTimerRef.current);
+      autosaveTimerRef.current = null;
+    }
+    try {
+      await invoke("unwatch_file"); // the scratchpad isn't externally watched
+    } catch (e) {
+      console.error("unwatch_file failed", e);
+    }
+    let contents = "";
+    let snapshot: FileSnapshot | null = null;
+    try {
+      const result = await invoke<ReadFileResult>("read_file", { path: scratch });
+      contents = result.contents;
+      snapshot = result.snapshot;
+    } catch (e) {
+      console.error("read scratch failed", e);
+    }
+    baselineCapturedRef.current = false;
+    setPath(null);
+    pathRef.current = null;
+    setInitialMarkdown(contents);
+    currentMarkdownRef.current = contents;
+    lastSavedRef.current = contents;
+    snapshotRef.current = snapshot;
+    setDirty(false);
+    setConflict(null);
+    setLoadKey((k) => k + 1);
+  }, [flushPendingAutosave]);
+
+  // Empty the scratchpad ("scrap it"). Only meaningful while in scratch mode.
+  const discardScratch = useCallback(async () => {
+    const scratch = scratchPathRef.current;
+    if (!scratch || pathRef.current) return;
+    if (autosaveTimerRef.current != null) {
+      window.clearTimeout(autosaveTimerRef.current);
+      autosaveTimerRef.current = null;
+    }
+    try {
+      const snap = await invoke<FileSnapshot>("write_file", {
+        path: scratch,
+        contents: "",
+        expected: snapshotRef.current,
+      });
+      snapshotRef.current = snap;
+    } catch (e) {
+      console.error("discard scratch failed", e);
+      snapshotRef.current = null;
+    }
+    baselineCapturedRef.current = false;
+    currentMarkdownRef.current = "";
+    lastSavedRef.current = "";
+    setInitialMarkdown("");
+    setDirty(false);
+    setLoadKey((k) => k + 1);
+  }, []);
+
   useEffect(() => {
     (async () => {
+      try {
+        scratchPathRef.current = await invoke<string>("get_scratch_path");
+      } catch (e) {
+        console.error("get_scratch_path failed", e);
+      }
       const pendingFolder = await invoke<string | null>("take_pending_folder");
       const pendingFile = await invoke<string | null>("take_pending_open");
       if (pendingFolder) {
@@ -290,6 +364,7 @@ export default function App() {
         if (stored) setWorkspaceRoot(stored);
       }
       if (pendingFile) await loadFile(pendingFile);
+      else await enterScratch(); // restore the scratchpad (hot-exit) or start blank
       setReady(true);
     })();
     const unFile = listen<OpenFilePayload>("open-file", (e) => {
@@ -302,7 +377,7 @@ export default function App() {
       void unFile.then((f) => f());
       void unFolder.then((f) => f());
     };
-  }, [loadFile, setWorkspace]);
+  }, [loadFile, setWorkspace, enterScratch]);
 
   useEffect(() => {
     const un = listen<ExternalChangePayload>("file-externally-changed", (e) => {
@@ -346,6 +421,9 @@ export default function App() {
       target = chosen;
       setPath(target);
       pathRef.current = target;
+      // Promote from scratchpad: this is Save As, so overwrite the chosen
+      // target unconditionally rather than comparing against the scratch snapshot.
+      snapshotRef.current = null;
     }
     if (autosaveTimerRef.current != null) {
       window.clearTimeout(autosaveTimerRef.current);
@@ -358,6 +436,16 @@ export default function App() {
       } catch (e) {
         console.error("watch_file failed", e);
       }
+      // The content now lives in a real file; empty the scratchpad so it
+      // starts fresh next time and doesn't shadow a duplicate copy.
+      const scratch = scratchPathRef.current;
+      if (scratch) {
+        try {
+          await invoke("write_file", { path: scratch, contents: "", expected: null });
+        } catch (e) {
+          console.error("clear scratch failed", e);
+        }
+      }
     }
   }, [writeToDisk]);
 
@@ -369,6 +457,9 @@ export default function App() {
       if (k === "s" && !e.shiftKey) {
         e.preventDefault();
         void handleSave();
+      } else if (k === "n" && !e.shiftKey) {
+        e.preventDefault();
+        void enterScratch();
       } else if (k === "o" && e.shiftKey) {
         e.preventDefault();
         void openFolderPicker();
@@ -382,17 +473,17 @@ export default function App() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [handleSave, openFolderPicker, openFilePicker, workspaceRoot]);
+  }, [handleSave, enterScratch, openFolderPicker, openFilePicker, workspaceRoot]);
 
   useEffect(() => {
-    const title = path ? `${dirty ? "● " : ""}${basename(path)}` : "MDE";
-    void getCurrentWindow().setTitle(title);
+    const name = path ? basename(path) : "Untitled";
+    void getCurrentWindow().setTitle(`${dirty ? "● " : ""}${name}`);
   }, [path, dirty]);
 
   if (!ready) return null;
 
   const showSidebar = workspaceRoot != null && sidebarOpen;
-  const showWelcome = path == null && workspaceRoot == null;
+  const isScratch = path == null;
 
   return (
     <div className={`app ${showSidebar ? "with-sidebar" : ""}`}>
@@ -416,7 +507,6 @@ export default function App() {
           onOpenFile={loadFile}
           onOpenFolder={openFolderPicker}
           onOpenFilePicker={openFilePicker}
-          onCloseWorkspace={() => setWorkspace(null)}
           onRevealInFinder={revealInFinder}
         />
       )}
@@ -427,20 +517,19 @@ export default function App() {
         />
       )}
       <main className="editor-wrap">
-        {showWelcome ? (
-          <Welcome onOpenFile={openFilePicker} onOpenFolder={openFolderPicker} />
-        ) : (
-          <Editor
-            ref={editorRef}
-            key={loadKey}
-            initialMarkdown={initialMarkdown}
-            onChange={onMarkdownChange}
-          />
-        )}
+        <Editor
+          ref={editorRef}
+          key={loadKey}
+          initialMarkdown={initialMarkdown}
+          onChange={onMarkdownChange}
+        />
       </main>
       <Settings
         theme={theme}
         onChange={setTheme}
+        isScratch={isScratch}
+        onNewNote={() => void enterScratch()}
+        onDiscard={() => void discardScratch()}
         onOpenFile={openFilePicker}
         onOpenFolder={openFolderPicker}
       />
@@ -498,7 +587,14 @@ function FileLabel({
     }
   }, [path]);
 
-  if (!path) return null;
+  if (!path) {
+    return (
+      <div className={`file-label ${hasSidebarToggle ? "with-toggle" : ""}`}>
+        <span className="file-label-name">Untitled</span>
+        {dirty && <span className="file-label-dot" aria-hidden>●</span>}
+      </div>
+    );
+  }
   const label = basename(path);
   return (
     <div
@@ -519,44 +615,20 @@ function FileLabel({
   );
 }
 
-function Welcome({
-  onOpenFile,
-  onOpenFolder,
-}: {
-  onOpenFile: () => void;
-  onOpenFolder: () => void;
-}) {
-  return (
-    <div className="welcome">
-      <div className="welcome-card">
-        <div className="welcome-title">MDE</div>
-        <div className="welcome-subtitle">A minimal markdown editor</div>
-        <div className="welcome-actions">
-          <button className="welcome-button" onClick={onOpenFile}>
-            Open file
-            <span className="welcome-shortcut">⌘O</span>
-          </button>
-          <button className="welcome-button" onClick={onOpenFolder}>
-            Open folder
-            <span className="welcome-shortcut">⌘⇧O</span>
-          </button>
-        </div>
-        <div className="welcome-hint">
-          Or just start typing — ⌘S saves to a new file.
-        </div>
-      </div>
-    </div>
-  );
-}
-
 function Settings({
   theme,
   onChange,
+  isScratch,
+  onNewNote,
+  onDiscard,
   onOpenFile,
   onOpenFolder,
 }: {
   theme: Theme;
   onChange: (t: Theme) => void;
+  isScratch: boolean;
+  onNewNote: () => void;
+  onDiscard: () => void;
   onOpenFile: () => void;
   onOpenFolder: () => void;
 }) {
@@ -586,6 +658,31 @@ function Settings({
       {open && (
         <div className="settings-popover" role="menu" aria-label="Settings">
           <div className="settings-section-label">File</div>
+          <button
+            role="menuitem"
+            className="settings-option"
+            onClick={() => {
+              setOpen(false);
+              onNewNote();
+            }}
+          >
+            <span className="settings-option-check" />
+            <span className="settings-option-label">New note</span>
+            <span className="settings-option-kbd">⌘N</span>
+          </button>
+          {isScratch && (
+            <button
+              role="menuitem"
+              className="settings-option"
+              onClick={() => {
+                setOpen(false);
+                onDiscard();
+              }}
+            >
+              <span className="settings-option-check" />
+              <span className="settings-option-label">Clear scratchpad</span>
+            </button>
+          )}
           <button
             role="menuitem"
             className="settings-option"

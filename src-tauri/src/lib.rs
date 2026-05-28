@@ -338,6 +338,24 @@ fn take_pending_folder(state: State<'_, PendingOpen>) -> Option<String> {
     state.folder.lock().ok().and_then(|mut g| g.take())
 }
 
+/// Returns the path to the app-managed scratchpad file, creating the parent
+/// directory and an empty file on first use. This backs the "untitled" buffer
+/// so a document is always durably persisted even before the user names a file.
+#[tauri::command]
+fn get_scratch_path(app: AppHandle) -> Result<String, String> {
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("app_data_dir: {}", e))?
+        .join("scratch");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("create scratch dir: {}", e))?;
+    let file = dir.join("current.md");
+    if !file.exists() {
+        std::fs::write(&file, "").map_err(|e| format!("init scratch: {}", e))?;
+    }
+    Ok(file.to_string_lossy().to_string())
+}
+
 #[tauri::command]
 fn reveal_in_finder(path: String) -> Result<(), String> {
     #[cfg(target_os = "macos")]
@@ -368,6 +386,9 @@ fn classify_arg(arg: &str) -> Option<CliPath> {
     } else {
         return None;
     };
+    // Resolve relative args like "." to an absolute path so the UI can show a
+    // real directory name. Falls back to the original for nonexistent paths.
+    let pb = std::fs::canonicalize(&pb).unwrap_or(pb);
     if pb.is_dir() {
         Some(CliPath::Folder(pb))
     } else {
@@ -433,6 +454,7 @@ pub fn run() {
             list_md_tree,
             take_pending_open,
             take_pending_folder,
+            get_scratch_path,
             reveal_in_finder
         ])
         .setup(move |app| {
