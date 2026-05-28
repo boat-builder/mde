@@ -23,7 +23,6 @@ const basename = (p: string) => p.split(/[\\/]/).pop() || p;
 type Theme = "system" | "light" | "sepia" | "dark";
 const THEMES: Theme[] = ["system", "light", "sepia", "dark"];
 const THEME_STORAGE_KEY = "mde:theme";
-const WORKSPACE_STORAGE_KEY = "mde:workspace";
 const SIDEBAR_OPEN_STORAGE_KEY = "mde:sidebar-open";
 const THEME_LABEL: Record<Theme, string> = {
   system: "System",
@@ -54,23 +53,6 @@ function isWriteError(e: unknown): e is WriteErrorPayload {
     ((e as { kind: unknown }).kind === "io" ||
       (e as { kind: unknown }).kind === "conflict")
   );
-}
-
-function readStoredWorkspace(): string | null {
-  try {
-    return localStorage.getItem(WORKSPACE_STORAGE_KEY);
-  } catch {
-    return null;
-  }
-}
-
-function writeStoredWorkspace(p: string | null) {
-  try {
-    if (p) localStorage.setItem(WORKSPACE_STORAGE_KEY, p);
-    else localStorage.removeItem(WORKSPACE_STORAGE_KEY);
-  } catch {
-    // ignore
-  }
 }
 
 function readStoredSidebarOpen(): boolean {
@@ -220,7 +202,6 @@ export default function App() {
 
   const setWorkspace = useCallback((root: string | null) => {
     setWorkspaceRoot(root);
-    writeStoredWorkspace(root);
     if (root) setSidebarOpen(true);
   }, []);
 
@@ -356,13 +337,7 @@ export default function App() {
       }
       const pendingFolder = await invoke<string | null>("take_pending_folder");
       const pendingFile = await invoke<string | null>("take_pending_open");
-      if (pendingFolder) {
-        setWorkspace(pendingFolder);
-      } else if (!pendingFile) {
-        // Bare launch — restore the last workspace if there was one.
-        const stored = readStoredWorkspace();
-        if (stored) setWorkspaceRoot(stored);
-      }
+      if (pendingFolder) setWorkspace(pendingFolder);
       if (pendingFile) await loadFile(pendingFile);
       else await enterScratch(); // restore the scratchpad (hot-exit) or start blank
       setReady(true);
