@@ -9,10 +9,15 @@ A minimal Tauri 2 desktop app for editing markdown files with a Notion-style WYS
 
 ## What it does
 
-- Edit one `.md` file at a time, optionally inside a folder workspace with a
-  collapsible file sidebar
+- Open multiple documents at once in **tabs** — a mix of real `.md` files and
+  untitled **drafts**, optionally inside a folder workspace with a collapsible
+  file sidebar
+- `⌘N` opens a fresh untitled draft. Drafts persist across restarts and are never
+  silently lost: closing a tab just closes it, and any draft with content stays
+  reachable from the **Drafts** list in the gear menu (closing an empty draft
+  discards it). `⌘S` promotes a draft to a real file.
 - Live block-style editing: type `# foo` and it becomes an H1, type `**bold**` and it bolds inline, slash menu for blocks, drag handles, etc.
-- Save back to the same `.md` file (lossless markdown round-trip via remark)
+- Real files autosave back to the same `.md` file (lossless markdown round-trip via remark)
 - Launches from:
   - Double-click on a `.md` file (or a folder) in Finder
   - `mde path/to/file.md` or `mde path/to/dir` from the terminal (via a shim)
@@ -65,44 +70,50 @@ Or double-click a `.md` file (or a folder) in Finder.
 ## Architecture
 
 - **Frontend**: React + Vite + Milkdown Crepe (`@milkdown/crepe`). Crepe is Milkdown's batteries-included preset — slash menu, block handles, toolbar, Notion-like keyboard shortcuts.
-- **Backend**: Tauri 2 (Rust). Commands: `read_file`, `write_file`, `list_md_tree` (walks a directory, returning a pruned tree of folders that contain markdown), `reveal_in_finder`, plus pending-open hand-off for the initial CLI args. `RunEvent::Opened` handles macOS open events for both files and folders. `tauri-plugin-single-instance` forwards CLI argv from a second `mde` invocation into the running window.
+- **Backend**: Tauri 2 (Rust). Commands: `read_file`, `write_file`, `list_md_tree` (walks a directory, returning a pruned tree of folders that contain markdown), `reveal_in_finder`, the draft lifecycle (`create_draft`, `list_drafts`, `delete_draft`, `migrate_scratch`), trash (`trash_file`/`restore_trashed`), plus pending-open hand-off for the initial CLI args. `RunEvent::Opened` handles macOS open events for both files and folders. `tauri-plugin-single-instance` forwards CLI argv from a second `mde` invocation into the running window.
 - **File association**: Declared in `src-tauri/tauri.conf.json` under `bundle.fileAssociations`. Tauri injects `CFBundleDocumentTypes` into `Info.plist` at bundle time.
 - **CLI**: `scripts/install.sh` writes a small `mde` shell shim that calls `open -a MDE --args <files>`. macOS routes argv through LaunchServices to the bundled app.
 
 ## Saving
 
-Auto-saves to the open file 600ms after the last keystroke. `⌘S` forces an
-immediate save (and is the only way to save an Untitled buffer — it opens a
-Save dialog).
+Both real files and drafts auto-save 600ms after the last keystroke — files to
+their path, drafts to `app_data_dir/drafts/<id>.md`. For a real file `⌘S` just
+flushes the pending write; for a draft it opens a Save dialog and promotes the
+draft into the chosen `.md` file (removing the draft). Switching tabs and
+quitting also flush, so unsaved keystrokes aren't lost.
 
 ## Keyboard
 
-- `⌘S` — force save now (or Save As if the file is untitled)
-- `⌘O` — open a file
+- `⌘N` — new untitled draft (in a new tab)
+- `⌘W` — close the current tab
+- `⌘S` — flush the current file, or Save As to promote a draft
+- `⌘O` — open a file (in a new tab)
 - `⌘⇧O` — open a folder as a workspace
 - `⌘\` — toggle the sidebar (only when a workspace is open)
-- `⌘Z` / `⌘⇧Z` — undo / redo (also `⌘Y` for redo)
+- `⌘Z` / `⌘⇧Z` — undo / redo (also `⌘Y` for redo). `⌘Z` outside the editor
+  restores a file deleted with `⌘⌫` from the sidebar.
 - All Milkdown/Crepe inline-format shortcuts: `⌘B` bold, `⌘I` italic, `⌘K` link, etc.
 - `/` on a new line — slash menu (headings, lists, code blocks, tables, …)
 
 ## UI elements
 
-- **Welcome screen** — shown when MDE opens with no file and no workspace.
-  Buttons for *Open file* and *Open folder*; just start typing if you want a
-  scratch buffer.
+- **Tab bar** — one row below the title strip; one tab per open document (drafts
+  and files), with a close `×` and a trailing `+` for a new draft. Middle-click
+  or `⌘W` closes a tab.
+- **Welcome screen** — shown when the active tab is an empty draft. Buttons for
+  *Open file* and *Open folder*; just start typing to fill the draft.
 - **Sidebar** (when a workspace is open) — collapsible tree of `.md` files
   under the workspace root. Folders that contain no markdown are hidden. The
   folder name at the top is a menu: *Open folder…*, *Open file…*,
   *Reveal in Finder*, *Close workspace*. A refresh button next to it re-scans
   the workspace, and the tree auto-refreshes on window focus.
-- **Top-left** — sidebar toggle (when a workspace is open) and the filename
-  (muted, small). Hover the filename to reveal a copy button that copies the
-  full file path to the clipboard.
+- **Top-left** — the sidebar toggle (when a workspace is open).
 - **Bottom-left** — a small gear button opens a settings popover with file
-  actions and the appearance picker.
+  actions, the **Drafts** list (reopen or discard any draft not currently open),
+  and the appearance picker.
 
-The last opened workspace and sidebar visibility are remembered in
-`localStorage` and restored on next launch.
+The open tabs + active tab, last opened workspace, sidebar visibility, and draft
+metadata are remembered in `localStorage` and restored on next launch.
 
 ## Themes
 

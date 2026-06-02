@@ -99,9 +99,10 @@ body,
 .app {
   display: grid;
   grid-template-columns: 1fr;
-  grid-template-rows: 38px 1fr;
+  grid-template-rows: 38px 36px 1fr;
   grid-template-areas:
     "drag"
+    "tabs"
     "main";
   height: 100vh;
   background: var(--app-bg);
@@ -112,6 +113,7 @@ body,
   grid-template-columns: 240px 1fr;
   grid-template-areas:
     "drag drag"
+    "tabs tabs"
     "side main";
 }
 
@@ -120,6 +122,120 @@ body,
   height: 38px;
   background: var(--app-bg);
   user-select: none;
+}
+
+/* ---------- Tab bar (one row below the drag strip) ---------- */
+
+.tab-bar {
+  grid-area: tabs;
+  display: flex;
+  align-items: stretch;
+  gap: 2px;
+  padding: 0 8px;
+  background: var(--app-bg);
+  border-bottom: 1px solid var(--app-border);
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: thin;
+}
+
+.tab-bar::-webkit-scrollbar {
+  height: 0;
+}
+
+.tab {
+  display: flex;
+  align-items: center;
+  flex: 0 0 auto;
+  max-width: 200px;
+  border-radius: 6px 6px 0 0;
+  color: var(--app-text-muted);
+  align-self: flex-end;
+  margin-bottom: -1px;
+}
+
+.tab:hover {
+  background: var(--app-hover);
+}
+
+.tab.is-active {
+  background: var(--app-surface);
+  color: var(--app-text);
+  border: 1px solid var(--app-border);
+  border-bottom: 1px solid var(--app-surface);
+}
+
+.tab-main {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  max-width: 180px;
+  padding: 6px 4px 6px 10px;
+  background: transparent;
+  border: none;
+  color: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.tab-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tab-dot {
+  flex-shrink: 0;
+  font-size: 9px;
+  line-height: 1;
+  color: var(--app-dirty);
+}
+
+.tab-close {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  margin-right: 6px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--app-text-muted);
+  cursor: pointer;
+  opacity: 0;
+}
+
+.tab:hover .tab-close,
+.tab.is-active .tab-close {
+  opacity: 1;
+}
+
+.tab-close:hover {
+  background: var(--app-border);
+  color: var(--app-text);
+}
+
+.tab-new {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 26px;
+  height: 26px;
+  align-self: center;
+  margin-left: 2px;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--app-text-muted);
+  cursor: pointer;
+}
+
+.tab-new:hover {
+  background: var(--app-hover);
+  color: var(--app-text);
 }
 
 /* ---------- Editor canvas ---------- */
@@ -142,7 +258,7 @@ body,
   max-width: 1080px;
   margin: 0 auto;
   padding: 24px 64px 240px;
-  min-height: calc(100vh - 38px);
+  min-height: calc(100vh - 74px);
   font-size: 16px;
   line-height: 1.6;
 }
@@ -292,71 +408,6 @@ body,
     --crepe-color-selected: rgba(255, 255, 255, 0.12);
     --crepe-color-inline-area: rgba(255, 255, 255, 0.08);
   }
-}
-
-/* ---------- File label (top-left) ----------
-   Sits over the draggable strip; left offset clears the macOS traffic lights
-   (and the sidebar toggle when a workspace is open). */
-
-.file-label {
-  position: fixed;
-  top: 11px;
-  left: 84px;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  max-width: calc(100vw - 120px);
-  font-size: 12px;
-  font-weight: 500;
-  color: var(--app-text-muted);
-  user-select: none;
-  z-index: 5;
-}
-
-.file-label.with-toggle {
-  left: 116px;
-}
-
-.app.with-sidebar .file-label {
-  left: calc(240px + 16px);
-  max-width: calc(100vw - 240px - 40px);
-}
-
-.file-label-name {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  max-width: 50vw;
-}
-
-.file-label-dot {
-  color: var(--app-dirty);
-  font-size: 8px;
-  line-height: 1;
-}
-
-.file-label-copy {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 22px;
-  height: 22px;
-  border-radius: 5px;
-  border: none;
-  background: transparent;
-  color: var(--app-text-muted);
-  cursor: pointer;
-  opacity: 0;
-  transition: opacity 0.12s, background 0.12s, color 0.12s;
-}
-
-.file-label:hover .file-label-copy {
-  opacity: 1;
-}
-
-.file-label-copy:hover {
-  background: var(--app-hover);
-  color: var(--app-text);
 }
 
 /* ---------- Settings (bottom-left) ---------- */
@@ -549,6 +600,61 @@ body,
 
 .settings-recents .settings-option-check {
   color: var(--app-text-muted);
+}
+
+/* Draft rows: an open button + a discard button, with a preview line. */
+.settings-draft-row {
+  display: flex;
+  align-items: stretch;
+}
+
+.settings-draft-open {
+  flex: 1;
+  min-width: 0;
+  align-items: flex-start;
+}
+
+.settings-draft-open .settings-option-check {
+  color: var(--app-text-muted);
+  margin-top: 1px;
+}
+
+.settings-draft-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  gap: 1px;
+}
+
+.settings-draft-preview {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  color: var(--app-text-muted);
+}
+
+.settings-draft-discard {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 28px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--app-text-muted);
+  cursor: pointer;
+  opacity: 0;
+}
+
+.settings-draft-row:hover .settings-draft-discard {
+  opacity: 1;
+}
+
+.settings-draft-discard:hover {
+  background: var(--app-hover);
+  color: var(--app-text);
 }
 
 /* ---------- Scratchpad empty state ---------- */

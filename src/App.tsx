@@ -5,6 +5,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { save as saveDialog, open as openDialog } from "@tauri-apps/plugin-dialog";
 import Editor from "./Editor";
 import Sidebar from "./Sidebar";
+import TabBar from "./TabBar";
 
 type OpenFilePayload = { path: string };
 type OpenFolderPayload = { path: string };
@@ -26,8 +27,29 @@ const THEME_STORAGE_KEY = "mde:theme";
 const SIDEBAR_OPEN_STORAGE_KEY = "mde:sidebar-open";
 const RECENTS_STORAGE_KEY = "mde:recents";
 const RECENTS_MAX = 8;
+const SESSION_STORAGE_KEY = "mde:session";
+const DRAFT_SEQ_STORAGE_KEY = "mde:draft-seq";
+const DRAFTS_META_STORAGE_KEY = "mde:drafts-meta";
 
 type RecentEntry = { path: string; kind: "file" | "folder" };
+
+// A tab is a lightweight descriptor; the document's content always lives on disk
+// (drafts in app_data_dir/drafts/<id>.md, files at their real path) and autosaves
+// there, so disk — not memory — is the source of truth across tabs.
+type TabKind = "draft" | "file";
+type Tab = { id: string; kind: TabKind; path: string; title?: string };
+type DraftInfo = { id: string; path: string; snapshot: FileSnapshot; preview: string };
+type DraftRow = { id: string; path: string; title: string; preview: string };
+type DraftsMeta = Record<string, { seq: number }>;
+
+// For a draft the tab id IS the draft file's stem (the uuid), so tab/meta/disk
+// all join on the same id. For files the title is derived from the path.
+const draftIdFromPath = (p: string) => basename(p).replace(/\.(md|markdown|mdown|mkd)$/i, "");
+const uuid = () =>
+  typeof crypto !== "undefined" && crypto.randomUUID
+    ? crypto.randomUUID()
+    : `id-${Date.now().toString(36)}-${Math.floor(Math.random() * 1e9).toString(36)}`;
+const tabTitle = (t: Tab) => (t.kind === "draft" ? t.title ?? "Untitled" : basename(t.path));
 const THEME_LABEL: Record<Theme, string> = {
   system: "System",
   light: "Light",
@@ -101,13 +123,87 @@ function writeStoredRecents(entries: RecentEntry[]) {
   }
 }
 
+function readStoredSession(): { tabs: Tab[]; activeId: string | null } {
+  try {
+    const raw = localStorage.getItem(SESSION_STORAGE_KEY);
+    if (!raw) return { tabs: [], activeId: null };
+    const parsed = JSON.parse(raw);
+    const tabs: Tab[] = Array.isArray(parsed?.tabs)
+      ? parsed.tabs.filter(
+          (t: unknown): t is Tab =>
+            !!t &&
+            typeof (t as Tab).id === "string" &&
+            typeof (t as Tab).path === "string" &&
+            ((t as Tab).kind === "draft" || (t as Tab).kind === "file"),
+        )
+      : [];
+    const activeId = typeof parsed?.activeId === "string" ? parsed.activeId : null;
+    return { tabs, activeId };
+  } catch {
+    return { tabs: [], activeId: null };
+  }
+}
+
+function writeStoredSession(tabs: Tab[], activeId: string | null) {
+  try {
+    localStorage.setItem(
+      SESSION_STORAGE_KEY,
+      JSON.stringify({ tabs, activeId, version: 1 }),
+    );
+  } catch {
+    // ignore
+  }
+}
+
+function readDraftSeq(): number {
+  try {
+    const v = parseInt(localStorage.getItem(DRAFT_SEQ_STORAGE_KEY) || "0", 10);
+    return Number.isFinite(v) ? v : 0;
+  } catch {
+    return 0;
+  }
+}
+
+function writeDraftSeq(n: number) {
+  try {
+    localStorage.setItem(DRAFT_SEQ_STORAGE_KEY, String(n));
+  } catch {
+    // ignore
+  }
+}
+
+function readDraftsMeta(): DraftsMeta {
+  try {
+    const raw = localStorage.getItem(DRAFTS_META_STORAGE_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" ? (parsed as DraftsMeta) : {};
+  } catch {
+    return {};
+  }
+}
+
+function writeDraftsMeta(m: DraftsMeta) {
+  try {
+    localStorage.setItem(DRAFTS_META_STORAGE_KEY, JSON.stringify(m));
+  } catch {
+    // ignore
+  }
+}
+
 export default function App() {
-  const [path, setPath] = useState<string | null>(null);
+  const [tabs, setTabs] = useState<Tab[]>([]);
+  const [activeId, setActiveId] = useState<string | null>(null);
   const [initialMarkdown, setInitialMarkdown] = useState<string>("");
   const [dirty, setDirty] = useState(false);
   const [ready, setReady] = useState(false);
   const [loadKey, setLoadKey] = useState(0);
   const [conflict, setConflict] = useState<Conflict | null>(null);
+  // `path` (open file) and `workspaceRoot` (folder) are independent, not two
+  // modes. Opening a file vs a folder must differ ONLY in UI: `workspaceRoot`
+  // gates the sidebar and nothing else. The file lifecycle (load/edit/autosave/
+  // watch/conflict) keys off `path` alone — keep it that way; never branch file
+  // handling on whether a workspace is open.
   const [workspaceRoot, setWorkspaceRoot] = useState<string | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState<boolean>(() => readStoredSidebarOpen());
   const [recents, setRecents] = useState<RecentEntry[]>(() => readStoredRecents());
@@ -118,16 +214,17 @@ export default function App() {
   const lastSavedRef = useRef<string>("");
   const baselineCapturedRef = useRef<boolean>(false);
   const pathRef = useRef<string | null>(null);
-  const scratchPathRef = useRef<string | null>(null);
   const snapshotRef = useRef<FileSnapshot | null>(null);
   const autosaveTimerRef = useRef<number | null>(null);
   const dirtyRef = useRef(false);
   const conflictRef = useRef<Conflict | null>(null);
+  // Imperative mirrors of the tab list + active id, so async operations read the
+  // latest value without stale closures (same pattern as pathRef/dirtyRef).
+  const tabsRef = useRef<Tab[]>([]);
+  const activeIdRef = useRef<string | null>(null);
+  const draftsMetaRef = useRef<DraftsMeta>({});
+  const draftSeqRef = useRef<number>(0);
   const [theme, setTheme] = useState<Theme>(() => readStoredTheme());
-
-  useEffect(() => {
-    pathRef.current = path;
-  }, [path]);
 
   useEffect(() => {
     dirtyRef.current = dirty;
@@ -157,15 +254,15 @@ export default function App() {
         contents,
         expected: snapshotRef.current,
       });
-      // The active document may have switched while this write was in flight
-      // (e.g. a flush of the previous doc resolving after entering the
-      // scratchpad). Only commit baseline state if `target` is still current.
-      if ((pathRef.current ?? scratchPathRef.current) !== target) return;
+      // The active tab may have switched while this write was in flight (e.g. a
+      // flush of the previous doc resolving after switching tabs). Only commit
+      // baseline state if `target` is still the active path.
+      if ((pathRef.current) !== target) return;
       snapshotRef.current = newSnapshot;
       lastSavedRef.current = contents;
       if (currentMarkdownRef.current === contents) setDirty(false);
     } catch (e) {
-      if ((pathRef.current ?? scratchPathRef.current) !== target) return;
+      if ((pathRef.current) !== target) return;
       if (isWriteError(e) && e.kind === "conflict") {
         setConflict({ diskSnapshot: e.current });
       } else {
@@ -181,7 +278,7 @@ export default function App() {
     autosaveTimerRef.current = window.setTimeout(() => {
       autosaveTimerRef.current = null;
       if (conflictRef.current) return; // pause autosave while a conflict is unresolved
-      const target = pathRef.current ?? scratchPathRef.current;
+      const target = pathRef.current;
       if (!target) return;
       const snapshot = currentMarkdownRef.current;
       if (snapshot === lastSavedRef.current) return;
@@ -194,7 +291,7 @@ export default function App() {
       window.clearTimeout(autosaveTimerRef.current);
       autosaveTimerRef.current = null;
     }
-    const target = pathRef.current ?? scratchPathRef.current;
+    const target = pathRef.current;
     if (!target) return;
     const snapshot = currentMarkdownRef.current;
     if (snapshot === lastSavedRef.current) return;
@@ -212,35 +309,155 @@ export default function App() {
     });
   }, []);
 
-  const loadFile = useCallback(async (p: string) => {
+  // Make `tab` the active document in the (single) editor: read its content from
+  // disk, reset the per-doc refs, and remount the editor. Watch only real files.
+  const loadActiveContent = useCallback(async (tab: Tab) => {
+    if (autosaveTimerRef.current != null) {
+      window.clearTimeout(autosaveTimerRef.current);
+      autosaveTimerRef.current = null;
+    }
+    let contents = "";
+    let snapshot: FileSnapshot | null = null;
     try {
-      // Flush any pending autosave on the previous file before switching.
-      flushPendingAutosave();
-      const result = await invoke<ReadFileResult>("read_file", { path: p });
-      if (autosaveTimerRef.current != null) {
-        window.clearTimeout(autosaveTimerRef.current);
-        autosaveTimerRef.current = null;
-      }
-      baselineCapturedRef.current = false;
-      setPath(p);
-      setInitialMarkdown(result.contents);
-      currentMarkdownRef.current = result.contents;
-      lastSavedRef.current = result.contents;
-      snapshotRef.current = result.snapshot;
-      setDirty(false);
-      setConflict(null);
-      setLoadKey((k) => k + 1);
-      addRecent(p, "file");
+      const result = await invoke<ReadFileResult>("read_file", { path: tab.path });
+      contents = result.contents;
+      snapshot = result.snapshot;
+    } catch (e) {
+      console.error("read failed", tab.path, e);
+    }
+    baselineCapturedRef.current = false;
+    pathRef.current = tab.path;
+    currentMarkdownRef.current = contents;
+    lastSavedRef.current = contents;
+    snapshotRef.current = snapshot;
+    setInitialMarkdown(contents);
+    setDirty(false);
+    setDocEmpty(contents.trim().length === 0);
+    setConflict(null);
+    setLoadKey((k) => k + 1);
+    if (tab.kind === "file") {
       try {
-        await invoke("watch_file", { path: p });
+        await invoke("watch_file", { path: tab.path });
       } catch (e) {
         console.error("watch_file failed", e);
       }
-    } catch (e) {
-      console.error(e);
-      alert(`Could not open ${p}\n${e}`);
+    } else {
+      try {
+        await invoke("unwatch_file"); // drafts aren't externally watched
+      } catch {
+        // ignore
+      }
     }
-  }, [flushPendingAutosave, addRecent]);
+  }, []);
+
+  const switchTab = useCallback(
+    async (id: string) => {
+      if (id === activeIdRef.current) return;
+      flushPendingAutosave(); // persist the outgoing doc before switching
+      const target = tabsRef.current.find((t) => t.id === id);
+      if (!target) return;
+      activeIdRef.current = id;
+      setActiveId(id);
+      writeStoredSession(tabsRef.current, id);
+      await loadActiveContent(target);
+    },
+    [flushPendingAutosave, loadActiveContent],
+  );
+
+  // Append a freshly-built tab and make it active.
+  const appendAndActivate = useCallback(
+    async (tab: Tab) => {
+      flushPendingAutosave(); // persist the outgoing doc before switching
+      const nextTabs = [...tabsRef.current, tab];
+      tabsRef.current = nextTabs;
+      activeIdRef.current = tab.id;
+      setTabs(nextTabs);
+      setActiveId(tab.id);
+      writeStoredSession(nextTabs, tab.id);
+      await loadActiveContent(tab);
+    },
+    [flushPendingAutosave, loadActiveContent],
+  );
+
+  // Open a path in a tab (dedupe by path). Used for files (picker/recents/sidebar/
+  // CLI) and for reopening a draft from the drafts list.
+  const openTab = useCallback(
+    async (p: string, kind: TabKind) => {
+      const existing = tabsRef.current.find((t) => t.path === p);
+      if (existing) {
+        await switchTab(existing.id);
+        return;
+      }
+      if (kind === "file") addRecent(p, "file");
+      if (kind === "draft") {
+        const id = draftIdFromPath(p);
+        await appendAndActivate({
+          id,
+          kind,
+          path: p,
+          title: `Untitled-${draftsMetaRef.current[id]?.seq ?? "?"}`,
+        });
+      } else {
+        await appendAndActivate({ id: uuid(), kind, path: p });
+      }
+    },
+    [switchTab, addRecent, appendAndActivate],
+  );
+
+  // ⌘N: create a brand-new empty draft and open it. Don't spawn a second empty
+  // draft if the active one is already an untouched draft.
+  const newDraft = useCallback(async () => {
+    const active = tabsRef.current.find((t) => t.id === activeIdRef.current);
+    if (active?.kind === "draft" && currentMarkdownRef.current.trim().length === 0) {
+      return;
+    }
+    const seq = draftSeqRef.current + 1;
+    draftSeqRef.current = seq;
+    writeDraftSeq(seq);
+    const id = uuid();
+    let draftPath: string;
+    try {
+      draftPath = await invoke<string>("create_draft", { id });
+    } catch (e) {
+      console.error("create_draft failed", e);
+      return;
+    }
+    draftsMetaRef.current = { ...draftsMetaRef.current, [id]: { seq } };
+    writeDraftsMeta(draftsMetaRef.current);
+    await appendAndActivate({ id, kind: "draft", path: draftPath, title: `Untitled-${seq}` });
+  }, [appendAndActivate]);
+
+  // Drafts list (for the Settings popover): all drafts that have content and
+  // aren't already open, newest first, joined with their Untitled-N number.
+  const listDraftRows = useCallback(async (): Promise<DraftRow[]> => {
+    let drafts: DraftInfo[] = [];
+    try {
+      drafts = await invoke<DraftInfo[]>("list_drafts");
+    } catch (e) {
+      console.error("list_drafts failed", e);
+      return [];
+    }
+    const openPaths = new Set(tabsRef.current.map((t) => t.path));
+    return drafts
+      .filter((d) => d.preview.trim().length > 0 && !openPaths.has(d.path))
+      .map((d) => ({
+        id: d.id,
+        path: d.path,
+        title: `Untitled-${draftsMetaRef.current[d.id]?.seq ?? "?"}`,
+        preview: d.preview,
+      }));
+  }, []);
+
+  const discardDraft = useCallback(async (p: string, id: string) => {
+    try {
+      await invoke("delete_draft", { path: p });
+    } catch (e) {
+      console.error("delete_draft failed", e);
+    }
+    const { [id]: _removed, ...rest } = draftsMetaRef.current;
+    draftsMetaRef.current = rest;
+    writeDraftsMeta(rest);
+  }, []);
 
   const setWorkspace = useCallback((root: string) => {
     setWorkspaceRoot(root);
@@ -263,18 +480,18 @@ export default function App() {
         multiple: false,
         filters: [{ name: "Markdown", extensions: ["md", "markdown", "mdown", "mkd"] }],
       });
-      if (typeof chosen === "string") await loadFile(chosen);
+      if (typeof chosen === "string") await openTab(chosen, "file");
     } catch (e) {
       console.error("open file failed", e);
     }
-  }, [loadFile]);
+  }, [openTab]);
 
   const openRecent = useCallback(
     (r: RecentEntry) => {
       if (r.kind === "folder") setWorkspace(r.path);
-      else void loadFile(r.path);
+      else void openTab(r.path, "file");
     },
-    [setWorkspace, loadFile],
+    [setWorkspace, openTab],
   );
 
   const revealInFinder = useCallback(async (target: string) => {
@@ -316,78 +533,74 @@ export default function App() {
     }
   }, [scheduleAutosave]);
 
-  // Switch the editor to the app-managed scratchpad (the "untitled" buffer).
-  // Non-destructive: restores whatever was last jotted there.
-  const enterScratch = useCallback(async () => {
-    const scratch = scratchPathRef.current;
-    if (!scratch) return;
-    flushPendingAutosave(); // persist the outgoing doc before switching
-    if (autosaveTimerRef.current != null) {
-      window.clearTimeout(autosaveTimerRef.current);
-      autosaveTimerRef.current = null;
-    }
-    try {
-      await invoke("unwatch_file"); // the scratchpad isn't externally watched
-    } catch (e) {
-      console.error("unwatch_file failed", e);
-    }
-    let contents = "";
-    let snapshot: FileSnapshot | null = null;
-    try {
-      const result = await invoke<ReadFileResult>("read_file", { path: scratch });
-      contents = result.contents;
-      snapshot = result.snapshot;
-    } catch (e) {
-      console.error("read scratch failed", e);
-    }
-    baselineCapturedRef.current = false;
-    setPath(null);
-    pathRef.current = null;
-    setInitialMarkdown(contents);
-    currentMarkdownRef.current = contents;
-    lastSavedRef.current = contents;
-    snapshotRef.current = snapshot;
-    setDirty(false);
-    setDocEmpty(contents.trim().length === 0);
-    setConflict(null);
-    setLoadKey((k) => k + 1);
-  }, [flushPendingAutosave]);
+  // Close a tab. Empty drafts are auto-discarded (nothing to recover); drafts
+  // with content persist and stay reachable from the drafts list. Closing the
+  // last tab opens a fresh draft so the canvas is never blank.
+  const closeTab = useCallback(
+    async (id: string) => {
+      const tab = tabsRef.current.find((t) => t.id === id);
+      if (!tab) return;
+      const isActive = id === activeIdRef.current;
+      if (isActive) flushPendingAutosave();
 
-  // Empty the scratchpad ("scrap it"). Only meaningful while in scratch mode.
-  const discardScratch = useCallback(async () => {
-    const scratch = scratchPathRef.current;
-    if (!scratch || pathRef.current) return;
-    if (autosaveTimerRef.current != null) {
-      window.clearTimeout(autosaveTimerRef.current);
-      autosaveTimerRef.current = null;
-    }
-    try {
-      const snap = await invoke<FileSnapshot>("write_file", {
-        path: scratch,
-        contents: "",
-        expected: snapshotRef.current,
-      });
-      snapshotRef.current = snap;
-    } catch (e) {
-      console.error("discard scratch failed", e);
-      snapshotRef.current = null;
-    }
-    baselineCapturedRef.current = false;
-    currentMarkdownRef.current = "";
-    lastSavedRef.current = "";
-    setInitialMarkdown("");
-    setDirty(false);
-    setDocEmpty(true);
-    setLoadKey((k) => k + 1);
-  }, []);
+      if (tab.kind === "draft") {
+        const content = isActive
+          ? currentMarkdownRef.current
+          : await invoke<ReadFileResult>("read_file", { path: tab.path })
+              .then((r) => r.contents)
+              .catch(() => "");
+        if (content.trim().length === 0) {
+          try {
+            await invoke("delete_draft", { path: tab.path });
+          } catch (e) {
+            console.error("delete_draft failed", e);
+          }
+          const { [tab.id]: _removed, ...rest } = draftsMetaRef.current;
+          draftsMetaRef.current = rest;
+          writeDraftsMeta(rest);
+        }
+      }
+
+      const idx = tabsRef.current.findIndex((t) => t.id === id);
+      const remaining = tabsRef.current.filter((t) => t.id !== id);
+      if (remaining.length === 0) {
+        tabsRef.current = [];
+        activeIdRef.current = null;
+        setTabs([]);
+        setActiveId(null);
+        writeStoredSession([], null);
+        await newDraft();
+        return;
+      }
+      const nextActive = isActive
+        ? remaining[Math.min(idx, remaining.length - 1)].id
+        : activeIdRef.current;
+      tabsRef.current = remaining;
+      activeIdRef.current = nextActive;
+      setTabs(remaining);
+      setActiveId(nextActive);
+      writeStoredSession(remaining, nextActive);
+      if (isActive && nextActive) {
+        const target = remaining.find((t) => t.id === nextActive);
+        if (target) await loadActiveContent(target);
+      }
+    },
+    [flushPendingAutosave, newDraft, loadActiveContent],
+  );
 
   // Move a file to the system Trash (⌘⌫ from the sidebar). The backend returns
   // where the file landed inside the Trash so undoDelete can pull it straight
-  // back out — a true restore that leaves no stale copy. If the deleted file was
-  // the one open in the editor, fall back to the scratchpad.
+  // back out — a true restore that leaves no stale copy. If the file is open in a
+  // tab, that tab is closed first (see below).
   const deleteFile = useCallback(
     async (target: string) => {
-      const wasOpen = pathRef.current === target;
+      // Close the tab first (flushing its content while the file still exists),
+      // so the trash that follows can't be resurrected by a late autosave write
+      // and the watcher has already moved to a neighbor tab.
+      const openForFile = tabsRef.current.find(
+        (t) => t.kind === "file" && t.path === target,
+      );
+      if (openForFile) await closeTab(openForFile.id);
       let trashPath: string;
       try {
         trashPath = await invoke<string>("trash_file", { path: target });
@@ -396,11 +609,10 @@ export default function App() {
         alert(`Could not delete ${target}\n${e}`);
         return;
       }
-      deletedStackRef.current.push({ path: target, trashPath, wasOpen });
-      if (wasOpen) await enterScratch();
+      deletedStackRef.current.push({ path: target, trashPath, wasOpen: !!openForFile });
       setTreeRefreshToken((t) => t + 1);
     },
-    [enterScratch],
+    [closeTab],
   );
 
   // Undo the most recent trash (⌘Z outside the editor): move the file back out
@@ -419,25 +631,76 @@ export default function App() {
       return;
     }
     setTreeRefreshToken((t) => t + 1);
-    if (entry.wasOpen) await loadFile(entry.path);
-  }, [loadFile]);
+    if (entry.wasOpen) await openTab(entry.path, "file");
+  }, [openTab]);
 
   useEffect(() => {
     (async () => {
+      draftSeqRef.current = readDraftSeq();
+      draftsMetaRef.current = readDraftsMeta();
+
+      // One-shot migration of the legacy single scratchpad into a draft.
+      let migrated: { id: string; path: string } | null = null;
+      const migrateId = uuid();
       try {
-        scratchPathRef.current = await invoke<string>("get_scratch_path");
+        const p = await invoke<string | null>("migrate_scratch", { id: migrateId });
+        if (p) migrated = { id: migrateId, path: p };
       } catch (e) {
-        console.error("get_scratch_path failed", e);
+        console.error("migrate_scratch failed", e);
       }
+
+      // Restore the persisted session, dropping tabs whose file no longer exists.
+      const stored = readStoredSession();
+      const restored: Tab[] = [];
+      for (const t of stored.tabs) {
+        try {
+          await invoke<ReadFileResult>("read_file", { path: t.path });
+          restored.push(
+            t.kind === "draft" && !t.title
+              ? { ...t, title: `Untitled-${draftsMetaRef.current[t.id]?.seq ?? "?"}` }
+              : t,
+          );
+        } catch {
+          // file or draft is gone → drop the tab
+        }
+      }
+
+      // Append the migrated scratchpad (if any) as a fresh draft tab.
+      if (migrated) {
+        const seq = draftSeqRef.current + 1;
+        draftSeqRef.current = seq;
+        writeDraftSeq(seq);
+        draftsMetaRef.current = { ...draftsMetaRef.current, [migrated.id]: { seq } };
+        writeDraftsMeta(draftsMetaRef.current);
+        restored.push({ id: migrated.id, kind: "draft", path: migrated.path, title: `Untitled-${seq}` });
+      }
+
+      // CLI / Finder launch ADDS to the session rather than replacing it.
       const pendingFolder = await invoke<string | null>("take_pending_folder");
       const pendingFile = await invoke<string | null>("take_pending_open");
+
+      if (restored.length > 0) {
+        const activeId =
+          stored.activeId && restored.some((t) => t.id === stored.activeId)
+            ? stored.activeId
+            : restored[restored.length - 1].id;
+        tabsRef.current = restored;
+        activeIdRef.current = activeId;
+        setTabs(restored);
+        setActiveId(activeId);
+        writeStoredSession(restored, activeId);
+        const active = restored.find((t) => t.id === activeId);
+        if (active) await loadActiveContent(active);
+      } else if (!pendingFile) {
+        await newDraft(); // nothing to restore and no file arg → start on a fresh draft
+      }
+
       if (pendingFolder) setWorkspace(pendingFolder);
-      if (pendingFile) await loadFile(pendingFile);
-      else await enterScratch(); // restore the scratchpad (hot-exit) or start blank
+      if (pendingFile) await openTab(pendingFile, "file");
       setReady(true);
     })();
     const unFile = listen<OpenFilePayload>("open-file", (e) => {
-      void loadFile(e.payload.path);
+      void openTab(e.payload.path, "file");
     });
     const unFolder = listen<OpenFolderPayload>("open-folder", (e) => {
       setWorkspace(e.payload.path);
@@ -446,7 +709,7 @@ export default function App() {
       void unFile.then((f) => f());
       void unFolder.then((f) => f());
     };
-  }, [loadFile, setWorkspace, enterScratch]);
+  }, [openTab, setWorkspace, newDraft, loadActiveContent]);
 
   useEffect(() => {
     const un = listen<ExternalChangePayload>("file-externally-changed", (e) => {
@@ -479,45 +742,51 @@ export default function App() {
   );
 
   const handleSave = useCallback(async () => {
-    let target = pathRef.current;
-    const isNewPath = !target;
-    if (!target) {
-      const chosen = await saveDialog({
-        title: "Save markdown",
-        defaultPath: "untitled.md",
-        filters: [{ name: "Markdown", extensions: ["md", "markdown"] }],
-      });
-      if (!chosen) return;
-      target = chosen;
-      setPath(target);
-      pathRef.current = target;
-      // Promote from scratchpad: this is Save As, so overwrite the chosen
-      // target unconditionally rather than comparing against the scratch snapshot.
-      snapshotRef.current = null;
+    const active = tabsRef.current.find((t) => t.id === activeIdRef.current);
+    if (!active) return;
+    if (active.kind === "file") {
+      // Real files autosave continuously; ⌘S just flushes any pending write.
+      flushPendingAutosave();
+      return;
     }
+    // Promote a draft to a real file (Save As).
+    const chosen = await saveDialog({
+      title: "Save markdown",
+      defaultPath: `${active.title ?? "untitled"}.md`,
+      filters: [{ name: "Markdown", extensions: ["md", "markdown"] }],
+    });
+    if (!chosen) return;
     if (autosaveTimerRef.current != null) {
       window.clearTimeout(autosaveTimerRef.current);
       autosaveTimerRef.current = null;
     }
-    await writeToDisk(target, currentMarkdownRef.current);
-    if (isNewPath) {
-      try {
-        await invoke("watch_file", { path: target });
-      } catch (e) {
-        console.error("watch_file failed", e);
-      }
-      // The content now lives in a real file; empty the scratchpad so it
-      // starts fresh next time and doesn't shadow a duplicate copy.
-      const scratch = scratchPathRef.current;
-      if (scratch) {
-        try {
-          await invoke("write_file", { path: scratch, contents: "", expected: null });
-        } catch (e) {
-          console.error("clear scratch failed", e);
-        }
-      }
+    const draftPath = active.path;
+    pathRef.current = chosen;
+    snapshotRef.current = null; // Save As: overwrite the chosen target unconditionally
+    await writeToDisk(chosen, currentMarkdownRef.current);
+    // Flip the tab from draft to a real file (in place, keeping its position).
+    const nextTabs = tabsRef.current.map((t) =>
+      t.id === active.id ? { id: t.id, kind: "file" as const, path: chosen } : t,
+    );
+    tabsRef.current = nextTabs;
+    setTabs(nextTabs);
+    writeStoredSession(nextTabs, activeIdRef.current);
+    try {
+      await invoke("watch_file", { path: chosen });
+    } catch (e) {
+      console.error("watch_file failed", e);
     }
-  }, [writeToDisk]);
+    // The content now lives in a real file; remove the draft + its metadata.
+    try {
+      await invoke("delete_draft", { path: draftPath });
+    } catch (e) {
+      console.error("delete_draft failed", e);
+    }
+    const { [active.id]: _removed, ...rest } = draftsMetaRef.current;
+    draftsMetaRef.current = rest;
+    writeDraftsMeta(rest);
+    addRecent(chosen, "file");
+  }, [writeToDisk, flushPendingAutosave, addRecent]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -529,7 +798,10 @@ export default function App() {
         void handleSave();
       } else if (k === "n" && !e.shiftKey) {
         e.preventDefault();
-        void enterScratch();
+        void newDraft();
+      } else if (k === "w" && !e.shiftKey) {
+        e.preventDefault();
+        if (activeIdRef.current) void closeTab(activeIdRef.current);
       } else if (k === "o" && e.shiftKey) {
         e.preventDefault();
         void openFolderPicker();
@@ -552,17 +824,47 @@ export default function App() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [handleSave, enterScratch, openFolderPicker, openFilePicker, workspaceRoot, undoDelete]);
+  }, [
+    handleSave,
+    newDraft,
+    closeTab,
+    openFolderPicker,
+    openFilePicker,
+    workspaceRoot,
+    undoDelete,
+  ]);
+
+  // Flush the active doc on quit so the last keystrokes within the autosave
+  // debounce window aren't lost (best-effort; the write is fire-and-forget).
+  useEffect(() => {
+    const onBeforeUnload = () => flushPendingAutosave();
+    window.addEventListener("beforeunload", onBeforeUnload);
+    let unlisten: (() => void) | undefined;
+    void getCurrentWindow()
+      .onCloseRequested(() => {
+        flushPendingAutosave();
+      })
+      .then((u) => {
+        unlisten = u;
+      });
+    return () => {
+      window.removeEventListener("beforeunload", onBeforeUnload);
+      unlisten?.();
+    };
+  }, [flushPendingAutosave]);
 
   useEffect(() => {
-    const name = path ? basename(path) : "Untitled";
+    const active = tabs.find((t) => t.id === activeId);
+    const name = active ? tabTitle(active) : "Untitled";
     void getCurrentWindow().setTitle(`${dirty ? "● " : ""}${name}`);
-  }, [path, dirty]);
+  }, [tabs, activeId, dirty]);
 
   if (!ready) return null;
 
+  const activeTab = tabs.find((t) => t.id === activeId) ?? null;
   const showSidebar = workspaceRoot != null && sidebarOpen;
-  const isScratch = path == null;
+  const isDraft = activeTab?.kind === "draft";
+  const activeFilePath = activeTab?.kind === "file" ? activeTab.path : null;
 
   return (
     <div className={`app ${showSidebar ? "with-sidebar" : ""}`}>
@@ -578,13 +880,20 @@ export default function App() {
           <SidebarIcon />
         </button>
       )}
-      <FileLabel path={path} dirty={dirty} hasSidebarToggle={workspaceRoot != null} />
+      <TabBar
+        tabs={tabs}
+        activeId={activeId}
+        dirty={dirty}
+        onSwitch={(id) => void switchTab(id)}
+        onClose={(id) => void closeTab(id)}
+        onNewDraft={() => void newDraft()}
+      />
       {showSidebar && workspaceRoot && (
         <Sidebar
           root={workspaceRoot}
-          currentPath={path}
+          currentPath={activeFilePath}
           refreshToken={treeRefreshToken}
-          onOpenFile={loadFile}
+          onOpenFile={(p) => void openTab(p, "file")}
           onOpenFolder={openFolderPicker}
           onOpenFilePicker={openFilePicker}
           onRevealInFinder={revealInFinder}
@@ -603,7 +912,7 @@ export default function App() {
           initialMarkdown={initialMarkdown}
           onChange={onMarkdownChange}
         />
-        {isScratch && docEmpty && (
+        {isDraft && docEmpty && (
           <ScratchEmptyState
             recents={recents}
             onOpenFile={openFilePicker}
@@ -615,13 +924,14 @@ export default function App() {
       <Settings
         theme={theme}
         onChange={setTheme}
-        isScratch={isScratch}
         recents={recents}
-        onNewNote={() => void enterScratch()}
-        onDiscard={() => void discardScratch()}
+        onNewNote={() => void newDraft()}
         onOpenFile={openFilePicker}
         onOpenFolder={openFolderPicker}
         onOpenRecent={openRecent}
+        onListDrafts={listDraftRows}
+        onOpenDraft={(p) => void openTab(p, "draft")}
+        onDiscardDraft={discardDraft}
       />
     </div>
   );
@@ -656,81 +966,40 @@ function ConflictBanner({
   );
 }
 
-function FileLabel({
-  path,
-  dirty,
-  hasSidebarToggle,
-}: {
-  path: string | null;
-  dirty: boolean;
-  hasSidebarToggle: boolean;
-}) {
-  const [copied, setCopied] = useState(false);
-  const onCopy = useCallback(async () => {
-    if (!path) return;
-    try {
-      await navigator.clipboard.writeText(path);
-      setCopied(true);
-      window.setTimeout(() => setCopied(false), 1200);
-    } catch (e) {
-      console.error("clipboard write failed", e);
-    }
-  }, [path]);
-
-  if (!path) {
-    return (
-      <div className={`file-label ${hasSidebarToggle ? "with-toggle" : ""}`}>
-        <span className="file-label-name">Untitled</span>
-        {dirty && <span className="file-label-dot" aria-hidden>●</span>}
-      </div>
-    );
-  }
-  const label = basename(path);
-  return (
-    <div
-      className={`file-label ${hasSidebarToggle ? "with-toggle" : ""}`}
-      title={path}
-    >
-      <span className="file-label-name">{label}</span>
-      {dirty && <span className="file-label-dot" aria-hidden>●</span>}
-      <button
-        className="file-label-copy"
-        onClick={onCopy}
-        title="Copy full path"
-        aria-label="Copy full file path"
-      >
-        {copied ? <CheckIcon /> : <CopyIcon />}
-      </button>
-    </div>
-  );
-}
-
 function Settings({
   theme,
   onChange,
-  isScratch,
   recents,
   onNewNote,
-  onDiscard,
   onOpenFile,
   onOpenFolder,
   onOpenRecent,
+  onListDrafts,
+  onOpenDraft,
+  onDiscardDraft,
 }: {
   theme: Theme;
   onChange: (t: Theme) => void;
-  isScratch: boolean;
   recents: RecentEntry[];
   onNewNote: () => void;
-  onDiscard: () => void;
   onOpenFile: () => void;
   onOpenFolder: () => void;
   onOpenRecent: (r: RecentEntry) => void;
+  onListDrafts: () => Promise<DraftRow[]>;
+  onOpenDraft: (path: string) => void;
+  onDiscardDraft: (path: string, id: string) => Promise<void>;
 }) {
   const [open, setOpen] = useState(false);
+  const [drafts, setDrafts] = useState<DraftRow[]>([]);
   const wrapRef = useRef<HTMLDivElement>(null);
+
+  const refreshDrafts = useCallback(() => {
+    void onListDrafts().then(setDrafts);
+  }, [onListDrafts]);
 
   useEffect(() => {
     if (!open) return;
+    refreshDrafts(); // load the drafts list each time the popover opens
     const onDoc = (e: MouseEvent) => {
       if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) {
         setOpen(false);
@@ -745,7 +1014,7 @@ function Settings({
       document.removeEventListener("mousedown", onDoc);
       document.removeEventListener("keydown", onKey);
     };
-  }, [open]);
+  }, [open, refreshDrafts]);
 
   return (
     <div ref={wrapRef} className="settings-wrap">
@@ -764,19 +1033,6 @@ function Settings({
             <span className="settings-option-label">New note</span>
             <span className="settings-option-kbd">⌘N</span>
           </button>
-          {isScratch && (
-            <button
-              role="menuitem"
-              className="settings-option"
-              onClick={() => {
-                setOpen(false);
-                onDiscard();
-              }}
-            >
-              <span className="settings-option-check" />
-              <span className="settings-option-label">Clear scratchpad</span>
-            </button>
-          )}
           <button
             role="menuitem"
             className="settings-option"
@@ -801,6 +1057,45 @@ function Settings({
             <span className="settings-option-label">Open folder…</span>
             <span className="settings-option-kbd">⌘⇧O</span>
           </button>
+          {drafts.length > 0 && (
+            <>
+              <div className="settings-divider" />
+              <div className="settings-section-label">Drafts</div>
+              <div className="settings-recents">
+                {drafts.map((d) => (
+                  <div key={d.id} className="settings-draft-row">
+                    <button
+                      role="menuitem"
+                      className="settings-option settings-draft-open"
+                      title={d.preview}
+                      onClick={() => {
+                        setOpen(false);
+                        onOpenDraft(d.path);
+                      }}
+                    >
+                      <span className="settings-option-check">
+                        <FileIcon />
+                      </span>
+                      <span className="settings-draft-text">
+                        <span className="settings-option-label">{d.title}</span>
+                        <span className="settings-draft-preview">{d.preview}</span>
+                      </span>
+                    </button>
+                    <button
+                      className="settings-draft-discard"
+                      title="Discard draft"
+                      aria-label={`Discard ${d.title}`}
+                      onClick={() => {
+                        void onDiscardDraft(d.path, d.id).then(refreshDrafts);
+                      }}
+                    >
+                      <TrashIcon />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
           {recents.length > 0 && (
             <>
               <div className="settings-divider" />
@@ -929,21 +1224,21 @@ function GearIcon() {
   );
 }
 
-function CopyIcon() {
+function TrashIcon() {
   return (
     <svg
-      width="12"
-      height="12"
+      width="13"
+      height="13"
       viewBox="0 0 24 24"
       fill="none"
       stroke="currentColor"
-      strokeWidth="2"
+      strokeWidth="1.8"
       strokeLinecap="round"
       strokeLinejoin="round"
       aria-hidden
     >
-      <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
-      <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+      <polyline points="3 6 5 6 21 6" />
+      <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
     </svg>
   );
 }
