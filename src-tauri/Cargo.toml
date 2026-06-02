@@ -21,3 +21,15 @@ serde_json = "1"
 url = "2"
 notify = "6"
 notify-debouncer-full = "0.3"
+
+# macOS-only: trashing files via NSFileManager (see trash_file in lib.rs). This
+# app currently targets macOS only — see the README. If we ever go cross-platform,
+# grep for "macOS-only" to find every spot that needs a portable fallback.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-foundation = { version = "0.3", default-features = false, features = [
+    "std",
+    "NSError",
+    "NSFileManager",
+    "NSString",
+    "NSURL",
+] }

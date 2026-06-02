@@ -112,6 +112,8 @@ export default function App() {
   const [sidebarOpen, setSidebarOpen] = useState<boolean>(() => readStoredSidebarOpen());
   const [recents, setRecents] = useState<RecentEntry[]>(() => readStoredRecents());
   const [docEmpty, setDocEmpty] = useState(true);
+  const [treeRefreshToken, setTreeRefreshToken] = useState(0);
+  const deletedStackRef = useRef<{ path: string; trashPath: string; wasOpen: boolean }[]>([]);
   const currentMarkdownRef = useRef<string>("");
   const lastSavedRef = useRef<string>("");
   const baselineCapturedRef = useRef<boolean>(false);
@@ -379,6 +381,47 @@ export default function App() {
     setLoadKey((k) => k + 1);
   }, []);
 
+  // Move a file to the system Trash (⌘⌫ from the sidebar). The backend returns
+  // where the file landed inside the Trash so undoDelete can pull it straight
+  // back out — a true restore that leaves no stale copy. If the deleted file was
+  // the one open in the editor, fall back to the scratchpad.
+  const deleteFile = useCallback(
+    async (target: string) => {
+      const wasOpen = pathRef.current === target;
+      let trashPath: string;
+      try {
+        trashPath = await invoke<string>("trash_file", { path: target });
+      } catch (e) {
+        console.error("trash failed", e);
+        alert(`Could not delete ${target}\n${e}`);
+        return;
+      }
+      deletedStackRef.current.push({ path: target, trashPath, wasOpen });
+      if (wasOpen) await enterScratch();
+      setTreeRefreshToken((t) => t + 1);
+    },
+    [enterScratch],
+  );
+
+  // Undo the most recent trash (⌘Z outside the editor): move the file back out
+  // of the Trash to its original path and reopen it if it had been open.
+  const undoDelete = useCallback(async () => {
+    const entry = deletedStackRef.current.pop();
+    if (!entry) return;
+    try {
+      await invoke("restore_trashed", {
+        trashPath: entry.trashPath,
+        originalPath: entry.path,
+      });
+    } catch (e) {
+      console.error("undo delete failed", e);
+      alert(`Could not restore ${entry.path}\n${e}`);
+      return;
+    }
+    setTreeRefreshToken((t) => t + 1);
+    if (entry.wasOpen) await loadFile(entry.path);
+  }, [loadFile]);
+
   useEffect(() => {
     (async () => {
       try {
@@ -496,11 +539,20 @@ export default function App() {
       } else if (k === "\\") {
         e.preventDefault();
         if (workspaceRoot) setSidebarOpen((v) => !v);
+      } else if (k === "z" && !e.shiftKey) {
+        // ⌘Z restores a trashed file — but only when focus is outside the
+        // editor, so it stays as Milkdown's text-undo while typing.
+        const t = e.target as HTMLElement | null;
+        if (t?.isContentEditable || t?.closest(".editor-wrap")) return;
+        if (deletedStackRef.current.length) {
+          e.preventDefault();
+          void undoDelete();
+        }
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [handleSave, enterScratch, openFolderPicker, openFilePicker, workspaceRoot]);
+  }, [handleSave, enterScratch, openFolderPicker, openFilePicker, workspaceRoot, undoDelete]);
 
   useEffect(() => {
     const name = path ? basename(path) : "Untitled";
@@ -531,10 +583,12 @@ export default function App() {
         <Sidebar
           root={workspaceRoot}
           currentPath={path}
+          refreshToken={treeRefreshToken}
           onOpenFile={loadFile}
           onOpenFolder={openFolderPicker}
           onOpenFilePicker={openFilePicker}
           onRevealInFinder={revealInFinder}
+          onDeleteFile={deleteFile}
         />
       )}
       {conflict && (

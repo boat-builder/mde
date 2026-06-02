@@ -1,3 +1,10 @@
+//! MDE backend.
+//!
+//! This app currently targets **macOS only** (see the README). Anywhere we lean
+//! on a platform-specific API we tag the spot with the literal comment
+//! `macOS-only` so a future cross-platform effort can `grep "macOS-only"` to find
+//! every place that needs a portable fallback.
+
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, UNIX_EPOCH};
@@ -356,6 +363,56 @@ fn get_scratch_path(app: AppHandle) -> Result<String, String> {
     Ok(file.to_string_lossy().to_string())
 }
 
+/// macOS-only: moves `path` to the system Trash via `NSFileManager` and returns
+/// the resulting location inside the Trash. The renderer keeps that location so
+/// `restore_trashed` can move the file straight back out of the Trash on undo —
+/// a true restore that leaves no stale copy behind. NSFileManager (rather than
+/// the Finder/AppleScript route) is what hands back the resulting Trash URL.
+#[cfg(target_os = "macos")]
+#[tauri::command]
+fn trash_file(path: String, store: State<'_, WatcherStore>) -> Result<String, String> {
+    use objc2_foundation::{NSFileManager, NSString, NSURL};
+
+    let path_buf = PathBuf::from(&path);
+    // Stop watching first so the impending removal doesn't surface as an
+    // external-change conflict for the file we're deleting.
+    if let Ok(mut guard) = store.0.lock() {
+        if guard.as_ref().map(|s| s.path == path_buf).unwrap_or(false) {
+            *guard = None;
+        }
+    }
+
+    let ns_path = NSString::from_str(&path);
+    let url = NSURL::fileURLWithPath(&ns_path);
+    let mut resulting = None;
+    NSFileManager::defaultManager()
+        .trashItemAtURL_resultingItemURL_error(&url, Some(&mut resulting))
+        .map_err(|e| format!("trash {}: {}", path, e))?;
+
+    resulting
+        .and_then(|u| u.path())
+        .map(|s| s.to_string())
+        .ok_or_else(|| format!("trash {}: no resulting trash path", path))
+}
+
+#[cfg(not(target_os = "macos"))]
+#[tauri::command]
+fn trash_file(_path: String, _store: State<'_, WatcherStore>) -> Result<String, String> {
+    // macOS-only: see the macOS implementation above for a cross-platform port.
+    Err("trash_file is only supported on macOS".to_string())
+}
+
+/// Restores a trashed file by moving it from its Trash location (returned by
+/// `trash_file`) back to its original path. `rename` itself is portable, but the
+/// Trash path it operates on is produced by the macOS-only `trash_file`.
+#[tauri::command]
+fn restore_trashed(trash_path: String, original_path: String) -> Result<(), String> {
+    std::fs::rename(&trash_path, &original_path)
+        .map_err(|e| format!("restore {} -> {}: {}", trash_path, original_path, e))
+}
+
+/// macOS-only: reveals `path` in Finder via `open -R`. The non-macOS arm just
+/// errors; a cross-platform port would shell out to the host file manager.
 #[tauri::command]
 fn reveal_in_finder(path: String) -> Result<(), String> {
     #[cfg(target_os = "macos")]
@@ -455,6 +512,8 @@ pub fn run() {
             take_pending_open,
             take_pending_folder,
             get_scratch_path,
+            trash_file,
+            restore_trashed,
             reveal_in_finder
         ])
         .setup(move |app| {

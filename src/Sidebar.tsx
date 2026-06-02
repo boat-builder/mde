@@ -8,10 +8,12 @@ export type TreeNode =
 type Props = {
   root: string;
   currentPath: string | null;
+  refreshToken: number;
   onOpenFile: (path: string) => void;
   onOpenFolder: () => void;
   onOpenFilePicker: () => void;
   onRevealInFinder: (path: string) => void;
+  onDeleteFile: (path: string) => void;
 };
 
 const basename = (p: string) => p.split(/[\\/]/).pop() || p;
@@ -19,10 +21,12 @@ const basename = (p: string) => p.split(/[\\/]/).pop() || p;
 export default function Sidebar({
   root,
   currentPath,
+  refreshToken,
   onOpenFile,
   onOpenFolder,
   onOpenFilePicker,
   onRevealInFinder,
+  onDeleteFile,
 }: Props) {
   const [tree, setTree] = useState<TreeNode | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -46,7 +50,7 @@ export default function Sidebar({
 
   useEffect(() => {
     void refresh();
-  }, [refresh]);
+  }, [refresh, refreshToken]);
 
   useEffect(() => {
     const onFocus = () => void refresh();
@@ -95,6 +99,7 @@ export default function Sidebar({
                 collapsed={collapsed}
                 onToggle={toggleCollapsed}
                 onOpenFile={onOpenFile}
+                onDeleteFile={onDeleteFile}
               />
             ))}
           </ul>
@@ -206,6 +211,7 @@ function TreeItem({
   collapsed,
   onToggle,
   onOpenFile,
+  onDeleteFile,
 }: {
   node: TreeNode;
   depth: number;
@@ -213,6 +219,7 @@ function TreeItem({
   collapsed: Set<string>;
   onToggle: (path: string) => void;
   onOpenFile: (path: string) => void;
+  onDeleteFile: (path: string) => void;
 }) {
   if (node.kind === "file") {
     const active = node.path === currentPath;
@@ -222,6 +229,14 @@ function TreeItem({
           className={`tree-row tree-file ${active ? "is-active" : ""}`}
           style={{ paddingLeft: 8 + depth * 14 }}
           onClick={() => onOpenFile(node.path)}
+          onKeyDown={(e) => {
+            // ⌘⌫ (or Ctrl+⌫) on the focused row moves the file to the trash,
+            // matching VSCode. Scoped to the row so it never fires while typing.
+            if ((e.metaKey || e.ctrlKey) && e.key === "Backspace") {
+              e.preventDefault();
+              onDeleteFile(node.path);
+            }
+          }}
           title={node.path}
         >
           <FileIcon />
@@ -256,6 +271,7 @@ function TreeItem({
               collapsed={collapsed}
               onToggle={onToggle}
               onOpenFile={onOpenFile}
+              onDeleteFile={onDeleteFile}
             />
           ))}
         </ul>

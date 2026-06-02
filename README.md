@@ -2,6 +2,11 @@
 
 A minimal Tauri 2 desktop app for editing markdown files with a Notion-style WYSIWYG editor (Milkdown / Crepe). Files are stored as plain markdown on disk.
 
+> **Platform: macOS only.** This app currently targets macOS and uses a few
+> macOS-specific APIs (Trash via `NSFileManager`, "Reveal in Finder", etc.). Every
+> such spot in the Rust backend is tagged with the comment `macOS-only` — `grep -r
+> "macOS-only" src-tauri` to find them all if you ever port it to another OS.
+
 ## What it does
 
 - Edit one `.md` file at a time, optionally inside a folder workspace with a
