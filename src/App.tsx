@@ -868,6 +868,18 @@ export default function App() {
       } else if (k === "w" && !e.shiftKey) {
         e.preventDefault();
         if (activeIdRef.current) void closeTab(activeIdRef.current);
+      } else if (k === "backspace") {
+        // ⌘⌫ moves the active file to the Trash — but only when focus is outside
+        // the editor, so it stays Milkdown's delete-to-line-start while typing.
+        // (A sidebar-row handler can't be relied on: WebKit doesn't focus
+        // buttons on click, so the row never holds focus to receive the key.)
+        const t = e.target as HTMLElement | null;
+        if (t?.isContentEditable || t?.closest(".editor-wrap")) return;
+        const active = tabsRef.current.find((tb) => tb.id === activeIdRef.current);
+        if (active?.kind === "file") {
+          e.preventDefault();
+          void deleteFile(active.path);
+        }
       } else if (k === "o" && e.shiftKey) {
         e.preventDefault();
         void openFolderPicker();
@@ -897,30 +909,12 @@ export default function App() {
     handleSave,
     newDraft,
     closeTab,
+    deleteFile,
     openFolderPicker,
     openFilePicker,
     workspaceRoot,
     undoDelete,
   ]);
-
-  // Flush the active doc on quit so the last keystrokes within the autosave
-  // debounce window aren't lost (best-effort; the write is fire-and-forget).
-  useEffect(() => {
-    const onBeforeUnload = () => flushPendingAutosave();
-    window.addEventListener("beforeunload", onBeforeUnload);
-    let unlisten: (() => void) | undefined;
-    void getCurrentWindow()
-      .onCloseRequested(() => {
-        flushPendingAutosave();
-      })
-      .then((u) => {
-        unlisten = u;
-      });
-    return () => {
-      window.removeEventListener("beforeunload", onBeforeUnload);
-      unlisten?.();
-    };
-  }, [flushPendingAutosave]);
 
   useEffect(() => {
     const active = tabs.find((t) => t.id === activeId);
@@ -990,7 +984,6 @@ export default function App() {
           onOpenFolder={openFolderPicker}
           onOpenFilePicker={openFilePicker}
           onRevealInFinder={revealInFinder}
-          onDeleteFile={deleteFile}
         />
       )}
       {conflict && (
