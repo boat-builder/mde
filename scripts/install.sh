@@ -91,6 +91,16 @@ if [ -x "$LSREGISTER" ]; then
   "$LSREGISTER" -f "$DEST_APP" >/dev/null 2>&1 || true
 fi
 
+# `pnpm tauri build` leaves a fully-formed MDE.app in target/, which Spotlight
+# and "Open With" index as a SECOND app alongside the one we just installed.
+# Unregister that build artifact from LaunchServices and mark target/ as
+# non-indexable so it stops surfacing. (cargo clean removes the marker; this
+# script re-adds it on every run.)
+if [ -x "$LSREGISTER" ]; then
+  "$LSREGISTER" -u "$SRC_APP" >/dev/null 2>&1 || true
+fi
+touch "$REPO_ROOT/src-tauri/target/.metadata_never_index" 2>/dev/null || true
+
 # ---------- 3. Install the CLI shim ----------
 if [ -z "$SKIP_CLI" ]; then
   if [ ! -d "$CLI_DIR" ] || [ ! -w "$CLI_DIR" ]; then
