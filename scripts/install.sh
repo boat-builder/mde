@@ -132,7 +132,11 @@ for f in "$@"; do
   esac
   args="$args \"$abs\""
 done
-eval open -a \"MDE\" --args $args
+# -n forces a new instance to launch so the file is delivered as argv; the
+# single-instance plugin forwards it to the running app, which opens it in a
+# new window (or focuses an existing window already showing it). Without -n,
+# `open -a` on a running app just activates it and drops --args.
+eval open -n -a \"MDE\" --args $args
 EOS
   chmod +x "$SHIM"
 
