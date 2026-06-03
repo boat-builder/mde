@@ -270,6 +270,12 @@ export default function App() {
   const [findCase, setFindCase] = useState(false);
   const [findInfo, setFindInfo] = useState<SearchInfo>({ count: 0, current: 0 });
   const [findFocusToken, setFindFocusToken] = useState(0);
+  // Mirror of findQuery so the global keydown handler can read it (to clear an
+  // active highlight on Esc) without re-registering the listener every keystroke.
+  const findQueryRef = useRef("");
+  useEffect(() => {
+    findQueryRef.current = findQuery;
+  }, [findQuery]);
 
   // Workspace search (⌘⇧F): the left sidebar toggles between the file tree
   // ("files") and a folder-wide search view ("search").
@@ -953,20 +959,24 @@ export default function App() {
     addRecent(chosen, "file");
   }, [writeToDisk, flushPendingAutosave, addRecent]);
 
-  // Push the in-file find query into the editor whenever it changes (and after
-  // the editor remounts for a new doc, keyed by loadKey). Calls before mount are
-  // buffered inside Editor. Closing the bar clears the highlights.
+  // Highlights are driven by the query alone, NOT by whether the find bar is
+  // visible — so opening a workspace-search result can highlight the match
+  // without showing the bar. An empty query clears the highlights. Re-applies
+  // after the editor remounts for a new doc (keyed by loadKey); calls before
+  // mount are buffered inside Editor.
   useEffect(() => {
-    if (findOpen) {
+    if (findQuery) {
       editorRef.current?.setSearch(findQuery, findCase);
     } else {
       editorRef.current?.clearSearch();
     }
-  }, [findOpen, findQuery, findCase, loadKey]);
+  }, [findQuery, findCase, loadKey]);
 
+  // Closing the bar ends the find session: clear the query (which clears the
+  // highlights via the effect above).
   const closeFind = useCallback(() => {
     setFindOpen(false);
-    editorRef.current?.clearSearch();
+    setFindQuery("");
   }, []);
 
   // ⌘⇧F: reveal the sidebar in Search mode and focus its input. With no
@@ -990,22 +1000,32 @@ export default function App() {
     }
   }, [workspaceRoot, setWorkspace]);
 
-  // Open a workspace-search result: load the file, then seed the in-file find
-  // with the same query so the match is highlighted (WYSIWYG has no line to
-  // scroll to — the find plugin scrolls the first match into view instead).
+  // Open a workspace-search result: load the file, then seed the search query
+  // so the match is highlighted and scrolled into view (WYSIWYG has no line to
+  // jump to). We deliberately do NOT open the find bar — the highlight alone is
+  // the "you landed here" cue; Esc clears it (see the keydown handler).
   const openResult = useCallback(
     async (p: string, query: string) => {
       await openTab(p, "file");
       setFindCase(wsCase);
       setFindQuery(query);
-      setFindOpen(true);
-      setFindFocusToken((t) => t + 1);
     },
     [openTab, wsCase],
   );
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      // Esc dismisses an active in-file highlight even when the find bar isn't
+      // shown (e.g. after landing on a workspace-search result). When the bar IS
+      // open and its input is focused, FindBar handles Esc itself; this is the
+      // fallback for when focus is elsewhere.
+      if (e.key === "Escape") {
+        if (findQueryRef.current) {
+          setFindOpen(false);
+          setFindQuery("");
+        }
+        return;
+      }
       const mod = e.metaKey || e.ctrlKey;
       if (!mod) return;
       const k = e.key.toLowerCase();
