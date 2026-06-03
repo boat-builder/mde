@@ -3,10 +3,13 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { save as saveDialog, open as openDialog } from "@tauri-apps/plugin-dialog";
-import Editor from "./Editor";
+import Editor, { type EditorHandle } from "./Editor";
+import type { SearchInfo } from "./searchPlugin";
 import Sidebar from "./Sidebar";
 import TabBar from "./TabBar";
 import DraftsPanel from "./DraftsPanel";
+import FindBar from "./FindBar";
+import WorkspaceSearch from "./WorkspaceSearch";
 
 type OpenFilePayload = { path: string };
 type OpenFolderPayload = { path: string };
@@ -257,6 +260,23 @@ export default function App() {
   const draftsMetaRef = useRef<DraftsMeta>({});
   const draftSeqRef = useRef<number>(0);
   const [theme, setTheme] = useState<Theme>(() => readStoredTheme());
+
+  // In-file find (⌘F): a bar over the editor that drives the ProseMirror search
+  // plugin through the editor ref. `findInfo` mirrors the plugin's match count +
+  // current index for the "3/12" readout.
+  const editorRef = useRef<EditorHandle>(null);
+  const [findOpen, setFindOpen] = useState(false);
+  const [findQuery, setFindQuery] = useState("");
+  const [findCase, setFindCase] = useState(false);
+  const [findInfo, setFindInfo] = useState<SearchInfo>({ count: 0, current: 0 });
+  const [findFocusToken, setFindFocusToken] = useState(0);
+
+  // Workspace search (⌘⇧F): the left sidebar toggles between the file tree
+  // ("files") and a folder-wide search view ("search").
+  const [sidebarMode, setSidebarMode] = useState<"files" | "search">("files");
+  const [wsQuery, setWsQuery] = useState("");
+  const [wsCase, setWsCase] = useState(false);
+  const [wsFocusToken, setWsFocusToken] = useState(0);
 
   useEffect(() => {
     dirtyRef.current = dirty;
@@ -933,12 +953,72 @@ export default function App() {
     addRecent(chosen, "file");
   }, [writeToDisk, flushPendingAutosave, addRecent]);
 
+  // Push the in-file find query into the editor whenever it changes (and after
+  // the editor remounts for a new doc, keyed by loadKey). Calls before mount are
+  // buffered inside Editor. Closing the bar clears the highlights.
+  useEffect(() => {
+    if (findOpen) {
+      editorRef.current?.setSearch(findQuery, findCase);
+    } else {
+      editorRef.current?.clearSearch();
+    }
+  }, [findOpen, findQuery, findCase, loadKey]);
+
+  const closeFind = useCallback(() => {
+    setFindOpen(false);
+    editorRef.current?.clearSearch();
+  }, []);
+
+  // ⌘⇧F: reveal the sidebar in Search mode and focus its input. With no
+  // workspace open yet, pick a folder first, then drop into search.
+  const openWorkspaceSearch = useCallback(async () => {
+    if (workspaceRoot) {
+      setSidebarOpen(true);
+      setSidebarMode("search");
+      setWsFocusToken((t) => t + 1);
+      return;
+    }
+    try {
+      const chosen = await openDialog({ directory: true, multiple: false });
+      if (typeof chosen === "string") {
+        setWorkspace(chosen);
+        setSidebarMode("search");
+        setWsFocusToken((t) => t + 1);
+      }
+    } catch (e) {
+      console.error("open folder failed", e);
+    }
+  }, [workspaceRoot, setWorkspace]);
+
+  // Open a workspace-search result: load the file, then seed the in-file find
+  // with the same query so the match is highlighted (WYSIWYG has no line to
+  // scroll to — the find plugin scrolls the first match into view instead).
+  const openResult = useCallback(
+    async (p: string, query: string) => {
+      await openTab(p, "file");
+      setFindCase(wsCase);
+      setFindQuery(query);
+      setFindOpen(true);
+      setFindFocusToken((t) => t + 1);
+    },
+    [openTab, wsCase],
+  );
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const mod = e.metaKey || e.ctrlKey;
       if (!mod) return;
       const k = e.key.toLowerCase();
-      if (k === "s" && !e.shiftKey) {
+      if (k === "f" && e.shiftKey) {
+        e.preventDefault();
+        void openWorkspaceSearch();
+      } else if (k === "f" && !e.shiftKey) {
+        e.preventDefault();
+        if (activeIdRef.current) {
+          setFindOpen(true);
+          setFindFocusToken((t) => t + 1);
+        }
+      } else if (k === "s" && !e.shiftKey) {
         e.preventDefault();
         void handleSave();
       } else if (k === "n" && !e.shiftKey) {
@@ -1006,6 +1086,7 @@ export default function App() {
     cycleTab,
     workspaceRoot,
     undoDelete,
+    openWorkspaceSearch,
   ]);
 
   useEffect(() => {
@@ -1067,7 +1148,19 @@ export default function App() {
         onClose={(id) => void closeTab(id)}
         onNewDraft={() => void newDraft()}
       />
-      {showSidebar && workspaceRoot && (
+      {showSidebar && workspaceRoot && sidebarMode === "search" && (
+        <WorkspaceSearch
+          root={workspaceRoot}
+          query={wsQuery}
+          onQueryChange={setWsQuery}
+          caseSensitive={wsCase}
+          onToggleCase={() => setWsCase((v) => !v)}
+          onOpenResult={(p, q) => void openResult(p, q)}
+          onBackToFiles={() => setSidebarMode("files")}
+          focusToken={wsFocusToken}
+        />
+      )}
+      {showSidebar && workspaceRoot && sidebarMode === "files" && (
         <Sidebar
           root={workspaceRoot}
           currentPath={activeFilePath}
@@ -1076,6 +1169,10 @@ export default function App() {
           onOpenFolder={openFolderPicker}
           onOpenFilePicker={openFilePicker}
           onRevealInFinder={revealInFinder}
+          onSwitchToSearch={() => {
+            setSidebarMode("search");
+            setWsFocusToken((t) => t + 1);
+          }}
         />
       )}
       {conflict && (
@@ -1085,11 +1182,27 @@ export default function App() {
         />
       )}
       <main className="editor-wrap">
+        {findOpen && activeTab && (
+          <FindBar
+            query={findQuery}
+            onQueryChange={setFindQuery}
+            count={findInfo.count}
+            current={findInfo.current}
+            caseSensitive={findCase}
+            onToggleCase={() => setFindCase((v) => !v)}
+            onNext={() => editorRef.current?.searchNext()}
+            onPrev={() => editorRef.current?.searchPrev()}
+            onClose={closeFind}
+            focusToken={findFocusToken}
+          />
+        )}
         {activeTab && (
           <Editor
             key={loadKey}
+            ref={editorRef}
             initialMarkdown={initialMarkdown}
             onChange={onMarkdownChange}
+            onSearchState={setFindInfo}
           />
         )}
         {(!activeTab || (isDraft && docEmpty)) && (

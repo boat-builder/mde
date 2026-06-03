@@ -13,6 +13,7 @@ type Props = {
   onOpenFolder: () => void;
   onOpenFilePicker: () => void;
   onRevealInFinder: (path: string) => void;
+  onSwitchToSearch: () => void;
 };
 
 const basename = (p: string) => p.split(/[\\/]/).pop() || p;
@@ -25,6 +26,7 @@ export default function Sidebar({
   onOpenFolder,
   onOpenFilePicker,
   onRevealInFinder,
+  onSwitchToSearch,
 }: Props) {
   const [tree, setTree] = useState<TreeNode | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -77,6 +79,7 @@ export default function Sidebar({
         onOpenFile={onOpenFilePicker}
         onRevealInFinder={() => onRevealInFinder(root)}
         onRefresh={() => void refresh()}
+        onSwitchToSearch={onSwitchToSearch}
       />
       <div className="sidebar-body">
         {error && <div className="sidebar-message sidebar-message-error">{error}</div>}
@@ -114,6 +117,7 @@ function SidebarHeader({
   onOpenFile,
   onRevealInFinder,
   onRefresh,
+  onSwitchToSearch,
 }: {
   name: string;
   menuOpen: boolean;
@@ -122,6 +126,7 @@ function SidebarHeader({
   onOpenFile: () => void;
   onRevealInFinder: () => void;
   onRefresh: () => void;
+  onSwitchToSearch: () => void;
 }) {
   const wrapRef = useRef<HTMLDivElement>(null);
 
@@ -154,6 +159,14 @@ function SidebarHeader({
       >
         <span className="sidebar-header-name">{name}</span>
         <ChevronDownIcon />
+      </button>
+      <button
+        className="sidebar-header-refresh"
+        onClick={onSwitchToSearch}
+        title="Search in folder (⌘⇧F)"
+        aria-label="Search in folder"
+      >
+        <SearchIcon />
       </button>
       <button
         className="sidebar-header-refresh"
@@ -323,6 +336,25 @@ function FileIcon() {
     >
       <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
       <polyline points="14 2 14 8 20 8" />
+    </svg>
+  );
+}
+
+function SearchIcon() {
+  return (
+    <svg
+      width="12"
+      height="12"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden
+    >
+      <circle cx="11" cy="11" r="7" />
+      <line x1="21" y1="21" x2="16.65" y2="16.65" />
     </svg>
   );
 }
