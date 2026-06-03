@@ -46,8 +46,22 @@ struct WindowSeq(Mutex<u32>);
 #[derive(Default)]
 struct AppReady(AtomicBool);
 
-fn enc(s: &str) -> String {
-    url::form_urlencoded::byte_serialize(s.as_bytes()).collect()
+/// Initial content for spawned windows, keyed by window label. Populated by
+/// `spawn_open_window` before the window is built and drained by the renderer via
+/// `take_window_init`. Passing content backend-side (rather than through the URL
+/// query) keeps it reliable in release builds, where the custom asset protocol
+/// can drop query strings.
+#[derive(Default)]
+struct PendingWindowOpen(Mutex<HashMap<String, (Option<String>, Option<String>)>>);
+
+/// What a freshly-mounted window should become: whether it's the main window
+/// (owns the shared session) and the file/folder it was spawned to show.
+#[derive(Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct WindowInit {
+    is_main: bool,
+    folder: Option<String>,
+    file: Option<String>,
 }
 
 /// Stable cross-window ordering for ⌘` cycling: the config window ("main")
@@ -101,24 +115,20 @@ fn spawn_open_window(app: &AppHandle, folder: Option<String>, file: Option<Strin
     };
     let label = format!("win-{}", n);
 
-    let mut parts = Vec::new();
-    if let Some(f) = &folder {
-        parts.push(format!("folder={}", enc(f)));
+    // Stash the initial content for this label; the renderer drains it via
+    // take_window_init once it mounts (reliable across dev and release builds).
+    if let Ok(mut map) = app.state::<PendingWindowOpen>().0.lock() {
+        map.insert(label.clone(), (folder, file));
     }
-    if let Some(f) = &file {
-        parts.push(format!("file={}", enc(f)));
-    }
-    let url = if parts.is_empty() {
-        "index.html".to_string()
-    } else {
-        format!("index.html?{}", parts.join("&"))
-    };
 
-    let mut builder =
-        tauri::WebviewWindowBuilder::new(app, &label, tauri::WebviewUrl::App(url.into()))
-            .title("MDE")
-            .inner_size(960.0, 720.0)
-            .min_inner_size(480.0, 320.0);
+    let mut builder = tauri::WebviewWindowBuilder::new(
+        app,
+        &label,
+        tauri::WebviewUrl::App("index.html".into()),
+    )
+    .title("MDE")
+    .inner_size(960.0, 720.0)
+    .min_inner_size(480.0, 320.0);
     #[cfg(target_os = "macos")]
     {
         builder = builder
@@ -149,7 +159,9 @@ fn route_open(app: &AppHandle, folder: Option<String>, file: Option<String>) {
                     .and_then(|m| m.get(&label).map(|c| c.files.contains(f)))
                     .unwrap_or(false);
                 if !already_open {
-                    let _ = win.emit("open-file", OpenFilePayload { path: f.clone() });
+                    // emit_to (not emit): emit broadcasts to every window; we
+                    // want only the focused one to open the file as a tab.
+                    let _ = app.emit_to(label.as_str(), "open-file", OpenFilePayload { path: f.clone() });
                 }
             }
             return;
@@ -526,6 +538,27 @@ fn register_window_content(
     ready.0.store(true, Ordering::SeqCst);
 }
 
+/// Tells a freshly-mounted window what it is and what to open. The label is the
+/// authority for window identity (read backend-side, never inferred in JS): only
+/// "main" owns the shared session; every other label is a spawned window that
+/// initializes from the file/folder stashed for it by `spawn_open_window`.
+#[tauri::command]
+fn take_window_init(window: tauri::Window, pending: State<'_, PendingWindowOpen>) -> WindowInit {
+    let label = window.label();
+    let is_main = label == "main";
+    let (folder, file) = pending
+        .0
+        .lock()
+        .ok()
+        .and_then(|mut m| m.remove(label))
+        .unwrap_or((None, None));
+    WindowInit {
+        is_main,
+        folder,
+        file,
+    }
+}
+
 /// Open a file/folder in a new window (focusing an existing window that already
 /// shows it). Invoked by the in-app "open in new window" shortcuts. Dispatches
 /// to the main thread because window creation is main-thread only on macOS.
@@ -796,6 +829,7 @@ pub fn run() {
         .manage(WindowRegistry::default())
         .manage(WindowSeq::default())
         .manage(AppReady::default())
+        .manage(PendingWindowOpen::default())
         .invoke_handler(tauri::generate_handler![
             read_file,
             write_file,
@@ -805,6 +839,7 @@ pub fn run() {
             take_pending_open,
             take_pending_folder,
             register_window_content,
+            take_window_init,
             open_in_window,
             focus_next_window,
             create_draft,

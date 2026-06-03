@@ -20,15 +20,14 @@ type Conflict = { diskSnapshot: FileSnapshot };
 
 const AUTOSAVE_DEBOUNCE_MS = 600;
 
-// The config-defined window has label "main"; windows spawned for external /
-// "open in new window" opens are labelled "win-N" and carry their initial
-// file/folder in the URL query. Only the main window owns the shared tab session
-// (mde:session) — spawned windows initialize purely from their query and never
-// restore or persist it. Shared prefs (theme, recents, drafts) stay shared.
-const IS_MAIN_WINDOW = !getCurrentWindow().label.startsWith("win-");
-const SPAWN_PARAMS = new URLSearchParams(window.location.search);
-const INITIAL_FOLDER = SPAWN_PARAMS.get("folder");
-const INITIAL_FILE = SPAWN_PARAMS.get("file");
+type WindowInit = { isMain: boolean; folder: string | null; file: string | null };
+
+// Whether this window owns the shared tab session (mde:session). The backend is
+// the authority (take_window_init keys off the real window label); we default to
+// true and flip it false for spawned windows once init resolves, so a spawned
+// window never clobbers the main window's session. Shared prefs (theme, recents,
+// drafts) stay shared across all windows.
+let isMainWindow = true;
 
 const basename = (p: string) => p.split(/[\\/]/).pop() || p;
 
@@ -158,8 +157,8 @@ function readStoredSession(): { tabs: Tab[]; activeId: string | null } {
 
 function writeStoredSession(tabs: Tab[], activeId: string | null) {
   // Only the main window owns the persisted session; spawned windows are driven
-  // by their URL query, so they must not clobber the shared session key.
-  if (!IS_MAIN_WINDOW) return;
+  // by take_window_init, so they must not clobber the shared session key.
+  if (!isMainWindow) return;
   try {
     localStorage.setItem(
       SESSION_STORAGE_KEY,
@@ -763,12 +762,15 @@ export default function App() {
       draftSeqRef.current = readDraftSeq();
       draftsMetaRef.current = readDraftsMeta();
 
-      // Spawned window: initialize purely from the URL query. Skip session
-      // restore, scratch migration, and pending-open consumption — those belong
-      // to the main window. (Shared prefs/drafts are already loaded above.)
-      if (!IS_MAIN_WINDOW) {
-        if (INITIAL_FOLDER) setWorkspace(INITIAL_FOLDER);
-        if (INITIAL_FILE) await openTab(INITIAL_FILE, "file");
+      // Ask the backend who we are and what to open (the window label is the
+      // authority). A spawned window initializes from its stashed file/folder and
+      // skips session restore, scratch migration, and pending-open consumption —
+      // those belong to the main window. (Shared prefs/drafts loaded above.)
+      const init = await invoke<WindowInit>("take_window_init");
+      if (!init.isMain) {
+        isMainWindow = false;
+        if (init.folder) setWorkspace(init.folder);
+        if (init.file) await openTab(init.file, "file");
         setReady(true);
         return;
       }
