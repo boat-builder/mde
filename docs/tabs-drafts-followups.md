@@ -81,3 +81,20 @@ process can exit before it resolves if you type and immediately ⌘Q within the
 **How:** In the Tauri window `onCloseRequested` handler, `preventDefault()`,
 `await` the pending write (make `flushPendingAutosave` awaitable / return the
 write promise), then destroy the window. Guard against double-close.
+
+## 7. Live preview refresh in the drafts panel
+
+**What:** Update each draft's one-line preview in the drafts panel as you type,
+not just when tabs change.
+
+**Why:** The panel currently refreshes on open and whenever the open tabs change
+(`refreshDraftsPanel` keyed on `tabs`). A draft you're actively editing keeps a
+stale preview — a brand-new draft shows "Empty draft" until you switch/close a
+tab. `list_drafts` reads from disk, so the refresh also has to land *after* the
+600ms autosave write, not on the keystroke.
+
+**How:** Bump a refresh token from `writeToDisk` (or right after the autosave
+flush) when the active doc is a draft, and add that token to the
+`refreshDraftsPanel` effect deps. Debounce so it doesn't thrash. Alternatively,
+update the active draft's row optimistically from `currentMarkdownRef` without a
+disk round-trip.

@@ -6,6 +6,7 @@ import { save as saveDialog, open as openDialog } from "@tauri-apps/plugin-dialo
 import Editor from "./Editor";
 import Sidebar from "./Sidebar";
 import TabBar from "./TabBar";
+import DraftsPanel from "./DraftsPanel";
 
 type OpenFilePayload = { path: string };
 type OpenFolderPayload = { path: string };
@@ -30,6 +31,7 @@ const RECENTS_MAX = 8;
 const SESSION_STORAGE_KEY = "mde:session";
 const DRAFT_SEQ_STORAGE_KEY = "mde:draft-seq";
 const DRAFTS_META_STORAGE_KEY = "mde:drafts-meta";
+const DRAFTS_OPEN_STORAGE_KEY = "mde:drafts-open";
 
 type RecentEntry = { path: string; kind: "file" | "folder" };
 
@@ -191,6 +193,22 @@ function writeDraftsMeta(m: DraftsMeta) {
   }
 }
 
+function readDraftsOpen(): boolean {
+  try {
+    return localStorage.getItem(DRAFTS_OPEN_STORAGE_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function writeDraftsOpen(open: boolean) {
+  try {
+    localStorage.setItem(DRAFTS_OPEN_STORAGE_KEY, open ? "1" : "0");
+  } catch {
+    // ignore
+  }
+}
+
 export default function App() {
   const [tabs, setTabs] = useState<Tab[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
@@ -206,6 +224,8 @@ export default function App() {
   // handling on whether a workspace is open.
   const [workspaceRoot, setWorkspaceRoot] = useState<string | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState<boolean>(() => readStoredSidebarOpen());
+  const [draftsOpen, setDraftsOpen] = useState<boolean>(() => readDraftsOpen());
+  const [draftRows, setDraftRows] = useState<DraftRow[]>([]);
   const [recents, setRecents] = useState<RecentEntry[]>(() => readStoredRecents());
   const [docEmpty, setDocEmpty] = useState(true);
   const [treeRefreshToken, setTreeRefreshToken] = useState(0);
@@ -246,6 +266,10 @@ export default function App() {
   useEffect(() => {
     writeStoredSidebarOpen(sidebarOpen);
   }, [sidebarOpen]);
+
+  useEffect(() => {
+    writeDraftsOpen(draftsOpen);
+  }, [draftsOpen]);
 
   const writeToDisk = useCallback(async (target: string, contents: string) => {
     try {
@@ -427,36 +451,26 @@ export default function App() {
     await appendAndActivate({ id, kind: "draft", path: draftPath, title: `Untitled-${seq}` });
   }, [appendAndActivate]);
 
-  // Drafts list (for the Settings popover): all drafts that have content and
-  // aren't already open, newest first, joined with their Untitled-N number.
-  const listDraftRows = useCallback(async (): Promise<DraftRow[]> => {
+  // Refresh the drafts-panel list: all drafts (newest first) joined with their
+  // Untitled-N number. Keeps open + empty drafts so the panel always reflects
+  // what exists (including the active new draft).
+  const refreshDraftsPanel = useCallback(async () => {
     let drafts: DraftInfo[] = [];
     try {
       drafts = await invoke<DraftInfo[]>("list_drafts");
     } catch (e) {
       console.error("list_drafts failed", e);
-      return [];
+      setDraftRows([]);
+      return;
     }
-    const openPaths = new Set(tabsRef.current.map((t) => t.path));
-    return drafts
-      .filter((d) => d.preview.trim().length > 0 && !openPaths.has(d.path))
-      .map((d) => ({
+    setDraftRows(
+      drafts.map((d) => ({
         id: d.id,
         path: d.path,
         title: `Untitled-${draftsMetaRef.current[d.id]?.seq ?? "?"}`,
         preview: d.preview,
-      }));
-  }, []);
-
-  const discardDraft = useCallback(async (p: string, id: string) => {
-    try {
-      await invoke("delete_draft", { path: p });
-    } catch (e) {
-      console.error("delete_draft failed", e);
-    }
-    const { [id]: _removed, ...rest } = draftsMetaRef.current;
-    draftsMetaRef.current = rest;
-    writeDraftsMeta(rest);
+      })),
+    );
   }, []);
 
   const setWorkspace = useCallback((root: string) => {
@@ -533,23 +547,52 @@ export default function App() {
     }
   }, [scheduleAutosave]);
 
+  // Reset to the "no document open" state (welcome screen). Clears the per-doc
+  // refs so autosave is a no-op and unmounts the editor.
+  const clearActiveDoc = useCallback(async () => {
+    if (autosaveTimerRef.current != null) {
+      window.clearTimeout(autosaveTimerRef.current);
+      autosaveTimerRef.current = null;
+    }
+    try {
+      await invoke("unwatch_file");
+    } catch {
+      // ignore
+    }
+    pathRef.current = null;
+    currentMarkdownRef.current = "";
+    lastSavedRef.current = "";
+    snapshotRef.current = null;
+    baselineCapturedRef.current = false;
+    setInitialMarkdown("");
+    setDirty(false);
+    setDocEmpty(true);
+    setConflict(null);
+  }, []);
+
   // Close a tab. Empty drafts are auto-discarded (nothing to recover); drafts
   // with content persist and stay reachable from the drafts list. Closing the
-  // last tab opens a fresh draft so the canvas is never blank.
+  // last tab leaves no document open (the welcome screen).
   const closeTab = useCallback(
-    async (id: string) => {
+    async (id: string, opts?: { discard?: boolean }) => {
       const tab = tabsRef.current.find((t) => t.id === id);
       if (!tab) return;
       const isActive = id === activeIdRef.current;
       if (isActive) flushPendingAutosave();
 
       if (tab.kind === "draft") {
-        const content = isActive
-          ? currentMarkdownRef.current
-          : await invoke<ReadFileResult>("read_file", { path: tab.path })
-              .then((r) => r.contents)
-              .catch(() => "");
-        if (content.trim().length === 0) {
+        // Delete the draft file when discarding outright, or when it's empty
+        // (nothing to recover). Otherwise the draft persists in the drafts panel.
+        let remove = opts?.discard === true;
+        if (!remove) {
+          const content = isActive
+            ? currentMarkdownRef.current
+            : await invoke<ReadFileResult>("read_file", { path: tab.path })
+                .then((r) => r.contents)
+                .catch(() => "");
+          remove = content.trim().length === 0;
+        }
+        if (remove) {
           try {
             await invoke("delete_draft", { path: tab.path });
           } catch (e) {
@@ -563,30 +606,54 @@ export default function App() {
 
       const idx = tabsRef.current.findIndex((t) => t.id === id);
       const remaining = tabsRef.current.filter((t) => t.id !== id);
-      if (remaining.length === 0) {
-        tabsRef.current = [];
-        activeIdRef.current = null;
-        setTabs([]);
-        setActiveId(null);
-        writeStoredSession([], null);
-        await newDraft();
-        return;
-      }
-      const nextActive = isActive
-        ? remaining[Math.min(idx, remaining.length - 1)].id
-        : activeIdRef.current;
+      const nextActive =
+        remaining.length === 0
+          ? null
+          : isActive
+            ? remaining[Math.min(idx, remaining.length - 1)].id
+            : activeIdRef.current;
       tabsRef.current = remaining;
       activeIdRef.current = nextActive;
       setTabs(remaining);
       setActiveId(nextActive);
       writeStoredSession(remaining, nextActive);
-      if (isActive && nextActive) {
+      if (nextActive === null) {
+        await clearActiveDoc();
+      } else if (isActive) {
         const target = remaining.find((t) => t.id === nextActive);
         if (target) await loadActiveContent(target);
       }
     },
-    [flushPendingAutosave, newDraft, loadActiveContent],
+    [flushPendingAutosave, clearActiveDoc, loadActiveContent],
   );
+
+  // Discard a draft from the drafts panel: if it's open in a tab, close that tab
+  // and force-delete it (even with content); otherwise just delete the file.
+  const discardDraft = useCallback(
+    async (p: string, id: string) => {
+      const open = tabsRef.current.find((t) => t.path === p);
+      if (open) {
+        await closeTab(open.id, { discard: true });
+      } else {
+        try {
+          await invoke("delete_draft", { path: p });
+        } catch (e) {
+          console.error("delete_draft failed", e);
+        }
+        const { [id]: _removed, ...rest } = draftsMetaRef.current;
+        draftsMetaRef.current = rest;
+        writeDraftsMeta(rest);
+      }
+      await refreshDraftsPanel();
+    },
+    [closeTab, refreshDraftsPanel],
+  );
+
+  // Keep the drafts panel in sync: refresh when it opens and whenever the open
+  // tabs change (new / close / promote all flow through here).
+  useEffect(() => {
+    if (draftsOpen) void refreshDraftsPanel();
+  }, [draftsOpen, tabs, refreshDraftsPanel]);
 
   // Move a file to the system Trash (⌘⌫ from the sidebar). The backend returns
   // where the file landed inside the Trash so undoDelete can pull it straight
@@ -691,9 +758,8 @@ export default function App() {
         writeStoredSession(restored, activeId);
         const active = restored.find((t) => t.id === activeId);
         if (active) await loadActiveContent(active);
-      } else if (!pendingFile) {
-        await newDraft(); // nothing to restore and no file arg → start on a fresh draft
       }
+      // Nothing to restore and no file arg → no tab open (welcome screen).
 
       if (pendingFolder) setWorkspace(pendingFolder);
       if (pendingFile) await openTab(pendingFile, "file");
@@ -709,7 +775,7 @@ export default function App() {
       void unFile.then((f) => f());
       void unFolder.then((f) => f());
     };
-  }, [openTab, setWorkspace, newDraft, loadActiveContent]);
+  }, [openTab, setWorkspace, loadActiveContent]);
 
   useEffect(() => {
     const un = listen<ExternalChangePayload>("file-externally-changed", (e) => {
@@ -811,6 +877,9 @@ export default function App() {
       } else if (k === "\\") {
         e.preventDefault();
         if (workspaceRoot) setSidebarOpen((v) => !v);
+      } else if (k === "d" && e.shiftKey) {
+        e.preventDefault();
+        setDraftsOpen((v) => !v);
       } else if (k === "z" && !e.shiftKey) {
         // ⌘Z restores a trashed file — but only when focus is outside the
         // editor, so it stays as Milkdown's text-undo while typing.
@@ -855,8 +924,8 @@ export default function App() {
 
   useEffect(() => {
     const active = tabs.find((t) => t.id === activeId);
-    const name = active ? tabTitle(active) : "Untitled";
-    void getCurrentWindow().setTitle(`${dirty ? "● " : ""}${name}`);
+    const name = active ? tabTitle(active) : "MDE";
+    void getCurrentWindow().setTitle(`${active && dirty ? "● " : ""}${name}`);
   }, [tabs, activeId, dirty]);
 
   if (!ready) return null;
@@ -865,20 +934,44 @@ export default function App() {
   const showSidebar = workspaceRoot != null && sidebarOpen;
   const isDraft = activeTab?.kind === "draft";
   const activeFilePath = activeTab?.kind === "file" ? activeTab.path : null;
+  const activeDraftPath = activeTab?.kind === "draft" ? activeTab.path : null;
 
   return (
-    <div className={`app ${showSidebar ? "with-sidebar" : ""}`}>
+    <div
+      className={`app ${showSidebar ? "with-sidebar" : ""} ${draftsOpen ? "show-drafts" : ""}`}
+    >
       <div className="drag-strip" data-tauri-drag-region />
-      {workspaceRoot && (
+      <div className="title-actions">
         <button
-          className="sidebar-toggle"
-          onClick={() => setSidebarOpen((v) => !v)}
-          title={sidebarOpen ? "Hide sidebar (⌘\\)" : "Show sidebar (⌘\\)"}
-          aria-label="Toggle sidebar"
-          aria-pressed={sidebarOpen}
+          className="title-toggle"
+          onClick={() => setDraftsOpen((v) => !v)}
+          title={draftsOpen ? "Hide drafts (⌘⇧D)" : "Show drafts (⌘⇧D)"}
+          aria-label="Toggle drafts panel"
+          aria-pressed={draftsOpen}
         >
-          <SidebarIcon />
+          <DraftsIcon />
         </button>
+        {workspaceRoot && (
+          <button
+            className="title-toggle"
+            onClick={() => setSidebarOpen((v) => !v)}
+            title={sidebarOpen ? "Hide sidebar (⌘\\)" : "Show sidebar (⌘\\)"}
+            aria-label="Toggle sidebar"
+            aria-pressed={sidebarOpen}
+          >
+            <SidebarIcon />
+          </button>
+        )}
+      </div>
+      {draftsOpen && (
+        <DraftsPanel
+          drafts={draftRows}
+          activePath={activeDraftPath}
+          onOpen={(p) => void openTab(p, "draft")}
+          onDiscard={(p, id) => void discardDraft(p, id)}
+          onNewDraft={() => void newDraft()}
+          onClose={() => setDraftsOpen(false)}
+        />
       )}
       <TabBar
         tabs={tabs}
@@ -907,14 +1000,18 @@ export default function App() {
         />
       )}
       <main className="editor-wrap">
-        <Editor
-          key={loadKey}
-          initialMarkdown={initialMarkdown}
-          onChange={onMarkdownChange}
-        />
-        {isDraft && docEmpty && (
+        {activeTab && (
+          <Editor
+            key={loadKey}
+            initialMarkdown={initialMarkdown}
+            onChange={onMarkdownChange}
+          />
+        )}
+        {(!activeTab || (isDraft && docEmpty)) && (
           <ScratchEmptyState
+            noDoc={!activeTab}
             recents={recents}
+            onNewNote={() => void newDraft()}
             onOpenFile={openFilePicker}
             onOpenFolder={openFolderPicker}
             onOpenRecent={openRecent}
@@ -929,9 +1026,6 @@ export default function App() {
         onOpenFile={openFilePicker}
         onOpenFolder={openFolderPicker}
         onOpenRecent={openRecent}
-        onListDrafts={listDraftRows}
-        onOpenDraft={(p) => void openTab(p, "draft")}
-        onDiscardDraft={discardDraft}
       />
     </div>
   );
@@ -974,9 +1068,6 @@ function Settings({
   onOpenFile,
   onOpenFolder,
   onOpenRecent,
-  onListDrafts,
-  onOpenDraft,
-  onDiscardDraft,
 }: {
   theme: Theme;
   onChange: (t: Theme) => void;
@@ -985,21 +1076,12 @@ function Settings({
   onOpenFile: () => void;
   onOpenFolder: () => void;
   onOpenRecent: (r: RecentEntry) => void;
-  onListDrafts: () => Promise<DraftRow[]>;
-  onOpenDraft: (path: string) => void;
-  onDiscardDraft: (path: string, id: string) => Promise<void>;
 }) {
   const [open, setOpen] = useState(false);
-  const [drafts, setDrafts] = useState<DraftRow[]>([]);
   const wrapRef = useRef<HTMLDivElement>(null);
-
-  const refreshDrafts = useCallback(() => {
-    void onListDrafts().then(setDrafts);
-  }, [onListDrafts]);
 
   useEffect(() => {
     if (!open) return;
-    refreshDrafts(); // load the drafts list each time the popover opens
     const onDoc = (e: MouseEvent) => {
       if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) {
         setOpen(false);
@@ -1014,7 +1096,7 @@ function Settings({
       document.removeEventListener("mousedown", onDoc);
       document.removeEventListener("keydown", onKey);
     };
-  }, [open, refreshDrafts]);
+  }, [open]);
 
   return (
     <div ref={wrapRef} className="settings-wrap">
@@ -1057,45 +1139,6 @@ function Settings({
             <span className="settings-option-label">Open folder…</span>
             <span className="settings-option-kbd">⌘⇧O</span>
           </button>
-          {drafts.length > 0 && (
-            <>
-              <div className="settings-divider" />
-              <div className="settings-section-label">Drafts</div>
-              <div className="settings-recents">
-                {drafts.map((d) => (
-                  <div key={d.id} className="settings-draft-row">
-                    <button
-                      role="menuitem"
-                      className="settings-option settings-draft-open"
-                      title={d.preview}
-                      onClick={() => {
-                        setOpen(false);
-                        onOpenDraft(d.path);
-                      }}
-                    >
-                      <span className="settings-option-check">
-                        <FileIcon />
-                      </span>
-                      <span className="settings-draft-text">
-                        <span className="settings-option-label">{d.title}</span>
-                        <span className="settings-draft-preview">{d.preview}</span>
-                      </span>
-                    </button>
-                    <button
-                      className="settings-draft-discard"
-                      title="Discard draft"
-                      aria-label={`Discard ${d.title}`}
-                      onClick={() => {
-                        void onDiscardDraft(d.path, d.id).then(refreshDrafts);
-                      }}
-                    >
-                      <TrashIcon />
-                    </button>
-                  </div>
-                ))}
-              </div>
-            </>
-          )}
           {recents.length > 0 && (
             <>
               <div className="settings-divider" />
@@ -1156,12 +1199,16 @@ function Settings({
 }
 
 function ScratchEmptyState({
+  noDoc,
   recents,
+  onNewNote,
   onOpenFile,
   onOpenFolder,
   onOpenRecent,
 }: {
+  noDoc: boolean;
   recents: RecentEntry[];
+  onNewNote: () => void;
   onOpenFile: () => void;
   onOpenFolder: () => void;
   onOpenRecent: (r: RecentEntry) => void;
@@ -1169,8 +1216,17 @@ function ScratchEmptyState({
   return (
     <div className="scratch-empty" aria-hidden={false}>
       <div className="scratch-empty-card">
-        <div className="scratch-empty-hint">Start typing to jot a note</div>
+        <div className="scratch-empty-hint">
+          {noDoc ? "No note open" : "Start typing to jot a note"}
+        </div>
         <div className="scratch-empty-actions">
+          {noDoc && (
+            <button className="scratch-empty-button" onClick={onNewNote}>
+              <FileIcon />
+              <span>New note</span>
+              <span className="scratch-empty-kbd">⌘N</span>
+            </button>
+          )}
           <button className="scratch-empty-button" onClick={onOpenFile}>
             <FileIcon />
             <span>Open file</span>
@@ -1224,11 +1280,11 @@ function GearIcon() {
   );
 }
 
-function TrashIcon() {
+function DraftsIcon() {
   return (
     <svg
-      width="13"
-      height="13"
+      width="14"
+      height="14"
       viewBox="0 0 24 24"
       fill="none"
       stroke="currentColor"
@@ -1237,8 +1293,7 @@ function TrashIcon() {
       strokeLinejoin="round"
       aria-hidden
     >
-      <polyline points="3 6 5 6 21 6" />
-      <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+      <path d="M4 5h12M4 10h16M4 15h10M4 20h14" />
     </svg>
   );
 }

@@ -96,25 +96,31 @@ body,
    When the sidebar is present we lay out with a column for it.
    The drag strip spans full width as the top row. */
 
+/* Three left-to-right slots: drafts panel | file sidebar | editor column.
+   Areas are constant; each panel's column collapses to 0 when hidden. */
 .app {
   display: grid;
-  grid-template-columns: 1fr;
+  grid-template-columns: 0 0 1fr;
   grid-template-rows: 38px 36px 1fr;
   grid-template-areas:
-    "drag"
-    "tabs"
-    "main";
+    "drag   drag  drag"
+    "drafts side  tabs"
+    "drafts side  main";
   height: 100vh;
   background: var(--app-bg);
   position: relative;
 }
 
+.app.show-drafts {
+  grid-template-columns: 240px 0 1fr;
+}
+
 .app.with-sidebar {
-  grid-template-columns: 240px 1fr;
-  grid-template-areas:
-    "drag drag"
-    "tabs tabs"
-    "side main";
+  grid-template-columns: 0 240px 1fr;
+}
+
+.app.show-drafts.with-sidebar {
+  grid-template-columns: 240px 240px 1fr;
 }
 
 .drag-strip {
@@ -602,61 +608,6 @@ body,
   color: var(--app-text-muted);
 }
 
-/* Draft rows: an open button + a discard button, with a preview line. */
-.settings-draft-row {
-  display: flex;
-  align-items: stretch;
-}
-
-.settings-draft-open {
-  flex: 1;
-  min-width: 0;
-  align-items: flex-start;
-}
-
-.settings-draft-open .settings-option-check {
-  color: var(--app-text-muted);
-  margin-top: 1px;
-}
-
-.settings-draft-text {
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-  gap: 1px;
-}
-
-.settings-draft-preview {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: 11px;
-  color: var(--app-text-muted);
-}
-
-.settings-draft-discard {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex: 0 0 auto;
-  width: 28px;
-  border: none;
-  border-radius: 6px;
-  background: transparent;
-  color: var(--app-text-muted);
-  cursor: pointer;
-  opacity: 0;
-}
-
-.settings-draft-row:hover .settings-draft-discard {
-  opacity: 1;
-}
-
-.settings-draft-discard:hover {
-  background: var(--app-hover);
-  color: var(--app-text);
-}
-
 /* ---------- Scratchpad empty state ---------- */
 
 .scratch-empty {
@@ -771,16 +722,22 @@ body,
   white-space: nowrap;
 }
 
-/* ---------- Sidebar toggle (top-left, next to traffic lights) ---------- */
+/* ---------- Title-bar toggles (top-left, next to traffic lights) ---------- */
 
-.sidebar-toggle {
+.title-actions {
   position: fixed;
-  top: 11px;
-  left: 84px;
+  top: 9px;
+  left: 82px;
+  display: flex;
+  gap: 2px;
+  z-index: 6;
+}
+
+.title-toggle {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 24px;
+  width: 26px;
   height: 22px;
   padding: 0;
   border: none;
@@ -790,17 +747,155 @@ body,
   cursor: pointer;
   opacity: 0.7;
   transition: opacity 0.12s, background 0.12s, color 0.12s;
-  z-index: 6;
 }
 
-.sidebar-toggle:hover {
+.title-toggle:hover {
   opacity: 1;
   color: var(--app-text);
   background: var(--app-hover);
 }
 
-.sidebar-toggle[aria-pressed="true"] {
+.title-toggle[aria-pressed="true"] {
   opacity: 1;
+  color: var(--app-text);
+}
+
+/* ---------- Drafts panel (left, workspace-independent) ---------- */
+
+.drafts-panel {
+  grid-area: drafts;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--app-bg);
+  border-right: 1px solid var(--app-border);
+  overflow: hidden;
+}
+
+.drafts-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 8px 6px 12px;
+  flex-shrink: 0;
+}
+
+.drafts-header-title {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--app-text-muted);
+}
+
+.drafts-header-actions {
+  display: flex;
+  gap: 2px;
+}
+
+.drafts-header-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--app-text-muted);
+  cursor: pointer;
+}
+
+.drafts-header-button:hover {
+  background: var(--app-hover);
+  color: var(--app-text);
+}
+
+.drafts-body {
+  flex: 1;
+  overflow-y: auto;
+  min-height: 0;
+}
+
+.drafts-empty {
+  padding: 8px 12px;
+  font-size: 12px;
+  color: var(--app-text-muted);
+}
+
+.drafts-list {
+  list-style: none;
+  margin: 0;
+  padding: 0 6px;
+}
+
+.draft-row {
+  display: flex;
+  align-items: stretch;
+  border-radius: 6px;
+}
+
+.draft-row:hover {
+  background: var(--app-hover);
+}
+
+.draft-row.is-active {
+  background: var(--crepe-color-selected, var(--app-hover));
+}
+
+.draft-open {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  flex: 1;
+  min-width: 0;
+  padding: 6px 8px;
+  border: none;
+  background: transparent;
+  color: var(--app-text);
+  cursor: pointer;
+  text-align: left;
+}
+
+.draft-title {
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.draft-row.is-active .draft-title {
+  font-weight: 600;
+}
+
+.draft-preview {
+  font-size: 11px;
+  color: var(--app-text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.draft-discard {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 26px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--app-text-muted);
+  cursor: pointer;
+  opacity: 0;
+}
+
+.draft-row:hover .draft-discard {
+  opacity: 1;
+}
+
+.draft-discard:hover {
+  background: var(--app-border);
   color: var(--app-text);
 }
 

@@ -14,8 +14,8 @@ A minimal Tauri 2 desktop app for editing markdown files with a Notion-style WYS
   file sidebar
 - `⌘N` opens a fresh untitled draft. Drafts persist across restarts and are never
   silently lost: closing a tab just closes it, and any draft with content stays
-  reachable from the **Drafts** list in the gear menu (closing an empty draft
-  discards it). `⌘S` promotes a draft to a real file.
+  reachable from the **Drafts panel** (closing an empty draft discards it). `⌘S`
+  promotes a draft to a real file.
 - Live block-style editing: type `# foo` and it becomes an H1, type `**bold**` and it bolds inline, slash menu for blocks, drag handles, etc.
 - Real files autosave back to the same `.md` file (lossless markdown round-trip via remark)
 - Launches from:
@@ -89,7 +89,8 @@ quitting also flush, so unsaved keystrokes aren't lost.
 - `⌘S` — flush the current file, or Save As to promote a draft
 - `⌘O` — open a file (in a new tab)
 - `⌘⇧O` — open a folder as a workspace
-- `⌘\` — toggle the sidebar (only when a workspace is open)
+- `⌘\` — toggle the file sidebar (only when a workspace is open)
+- `⌘⇧D` — toggle the drafts panel
 - `⌘Z` / `⌘⇧Z` — undo / redo (also `⌘Y` for redo). `⌘Z` outside the editor
   restores a file deleted with `⌘⌫` from the sidebar.
 - All Milkdown/Crepe inline-format shortcuts: `⌘B` bold, `⌘I` italic, `⌘K` link, etc.
@@ -100,19 +101,22 @@ quitting also flush, so unsaved keystrokes aren't lost.
 - **Tab bar** — one row below the title strip; one tab per open document (drafts
   and files), with a close `×` and a trailing `+` for a new draft. Middle-click
   or `⌘W` closes a tab.
-- **Welcome screen** — shown when the active tab is an empty draft. Buttons for
-  *Open file* and *Open folder*; just start typing to fill the draft.
-- **Sidebar** (when a workspace is open) — collapsible tree of `.md` files
-  under the workspace root. Folders that contain no markdown are hidden. The
-  folder name at the top is a menu: *Open folder…*, *Open file…*,
-  *Reveal in Finder*, *Close workspace*. A refresh button next to it re-scans
-  the workspace, and the tree auto-refreshes on window focus.
-- **Top-left** — the sidebar toggle (when a workspace is open).
+- **Welcome screen** — shown when no document is open, or when the active tab is
+  an empty draft. Buttons for *New note*, *Open file*, and *Open folder*.
+- **Drafts panel** (`⌘⇧D`) — a left panel listing every draft with a one-line
+  preview, independent of any workspace. Click to open/switch to a draft; the
+  trash icon discards one. The active draft is highlighted.
+- **Sidebar** (`⌘\`, when a workspace is open) — collapsible tree of `.md` files
+  under the workspace root, to the right of the drafts panel. Folders that contain
+  no markdown are hidden. The folder name at the top is a menu: *Open folder…*,
+  *Open file…*, *Reveal in Finder*, *Close workspace*. A refresh button next to it
+  re-scans the workspace, and the tree auto-refreshes on window focus.
+- **Top-left** — toggles for the drafts panel and (when a workspace is open) the
+  file sidebar.
 - **Bottom-left** — a small gear button opens a settings popover with file
-  actions, the **Drafts** list (reopen or discard any draft not currently open),
-  and the appearance picker.
+  actions and the appearance picker.
 
-The open tabs + active tab, last opened workspace, sidebar visibility, and draft
+The open tabs + active tab, last opened workspace, panel visibility, and draft
 metadata are remembered in `localStorage` and restored on next launch.
 
 ## Themes
