@@ -20,6 +20,16 @@ type Conflict = { diskSnapshot: FileSnapshot };
 
 const AUTOSAVE_DEBOUNCE_MS = 600;
 
+// The config-defined window has label "main"; windows spawned for external /
+// "open in new window" opens are labelled "win-N" and carry their initial
+// file/folder in the URL query. Only the main window owns the shared tab session
+// (mde:session) — spawned windows initialize purely from their query and never
+// restore or persist it. Shared prefs (theme, recents, drafts) stay shared.
+const IS_MAIN_WINDOW = !getCurrentWindow().label.startsWith("win-");
+const SPAWN_PARAMS = new URLSearchParams(window.location.search);
+const INITIAL_FOLDER = SPAWN_PARAMS.get("folder");
+const INITIAL_FILE = SPAWN_PARAMS.get("file");
+
 const basename = (p: string) => p.split(/[\\/]/).pop() || p;
 
 type Theme = "system" | "light" | "sepia" | "dark";
@@ -147,6 +157,9 @@ function readStoredSession(): { tabs: Tab[]; activeId: string | null } {
 }
 
 function writeStoredSession(tabs: Tab[], activeId: string | null) {
+  // Only the main window owns the persisted session; spawned windows are driven
+  // by their URL query, so they must not clobber the shared session key.
+  if (!IS_MAIN_WINDOW) return;
   try {
     localStorage.setItem(
       SESSION_STORAGE_KEY,
@@ -388,6 +401,20 @@ export default function App() {
     [flushPendingAutosave, loadActiveContent],
   );
 
+  // Ctrl+Tab / Ctrl+Shift+Tab: cycle to the next/previous tab in this window,
+  // wrapping around (linear tab-bar order). No-op with fewer than two tabs.
+  const cycleTab = useCallback(
+    (dir: 1 | -1) => {
+      const list = tabsRef.current;
+      if (list.length < 2) return;
+      const idx = list.findIndex((t) => t.id === activeIdRef.current);
+      const start = idx < 0 ? 0 : idx;
+      const next = (start + dir + list.length) % list.length;
+      void switchTab(list[next].id);
+    },
+    [switchTab],
+  );
+
   // Append a freshly-built tab and make it active.
   const appendAndActivate = useCallback(
     async (tab: Tab) => {
@@ -499,6 +526,36 @@ export default function App() {
       console.error("open file failed", e);
     }
   }, [openTab]);
+
+  // Open in a NEW window (⌘⌥O / ⌘⌥⇧O). The backend focuses an existing window
+  // already showing the path, or spawns a fresh one — so the same file/folder is
+  // never opened twice.
+  const openFileInNewWindow = useCallback(async () => {
+    try {
+      const chosen = await openDialog({
+        multiple: false,
+        filters: [{ name: "Markdown", extensions: ["md", "markdown", "mdown", "mkd"] }],
+      });
+      if (typeof chosen === "string") {
+        addRecent(chosen, "file");
+        await invoke("open_in_window", { folder: null, file: chosen });
+      }
+    } catch (e) {
+      console.error("open file in new window failed", e);
+    }
+  }, [addRecent]);
+
+  const openFolderInNewWindow = useCallback(async () => {
+    try {
+      const chosen = await openDialog({ directory: true, multiple: false });
+      if (typeof chosen === "string") {
+        addRecent(chosen, "folder");
+        await invoke("open_in_window", { folder: chosen, file: null });
+      }
+    } catch (e) {
+      console.error("open folder in new window failed", e);
+    }
+  }, [addRecent]);
 
   const openRecent = useCallback(
     (r: RecentEntry) => {
@@ -706,6 +763,16 @@ export default function App() {
       draftSeqRef.current = readDraftSeq();
       draftsMetaRef.current = readDraftsMeta();
 
+      // Spawned window: initialize purely from the URL query. Skip session
+      // restore, scratch migration, and pending-open consumption — those belong
+      // to the main window. (Shared prefs/drafts are already loaded above.)
+      if (!IS_MAIN_WINDOW) {
+        if (INITIAL_FOLDER) setWorkspace(INITIAL_FOLDER);
+        if (INITIAL_FILE) await openTab(INITIAL_FILE, "file");
+        setReady(true);
+        return;
+      }
+
       // One-shot migration of the legacy single scratchpad into a draft.
       let migrated: { id: string; path: string } | null = null;
       const migrateId = uuid();
@@ -776,6 +843,16 @@ export default function App() {
       void unFolder.then((f) => f());
     };
   }, [openTab, setWorkspace, loadActiveContent]);
+
+  // Report this window's content (workspace folder + open file paths) to the
+  // backend whenever it changes, so an external open can focus the window that
+  // already shows a path instead of opening a duplicate. The first report also
+  // marks the app "ready", flipping external opens from the cold-start
+  // pending-open path to window routing.
+  useEffect(() => {
+    const files = tabs.filter((t) => t.kind === "file").map((t) => t.path);
+    void invoke("register_window_content", { folder: workspaceRoot, files });
+  }, [workspaceRoot, tabs]);
 
   useEffect(() => {
     const un = listen<ExternalChangePayload>("file-externally-changed", (e) => {
@@ -880,12 +957,22 @@ export default function App() {
           e.preventDefault();
           void deleteFile(active.path);
         }
-      } else if (k === "o" && e.shiftKey) {
+      } else if (e.code === "KeyO") {
+        // Use e.code, not e.key: on macOS holding ⌥ remaps e.key (⌥O → "ø").
+        // ⌥ → open in a NEW window; ⇧ → folder instead of file.
         e.preventDefault();
-        void openFolderPicker();
-      } else if (k === "o" && !e.shiftKey) {
+        if (e.altKey && e.shiftKey) void openFolderInNewWindow();
+        else if (e.altKey) void openFileInNewWindow();
+        else if (e.shiftKey) void openFolderPicker();
+        else void openFilePicker();
+      } else if (e.code === "Tab" && e.ctrlKey) {
+        // Ctrl+Tab / Ctrl+⇧Tab: cycle tabs within this window (VS Code style).
         e.preventDefault();
-        void openFilePicker();
+        cycleTab(e.shiftKey ? -1 : 1);
+      } else if (e.code === "Backquote" && e.metaKey) {
+        // ⌘` / ⌘⇧`: cycle between this app's windows (Safari style).
+        e.preventDefault();
+        void invoke("focus_next_window", { backward: e.shiftKey });
       } else if (k === "\\") {
         e.preventDefault();
         if (workspaceRoot) setSidebarOpen((v) => !v);
@@ -912,6 +999,9 @@ export default function App() {
     deleteFile,
     openFolderPicker,
     openFilePicker,
+    openFileInNewWindow,
+    openFolderInNewWindow,
+    cycleTab,
     workspaceRoot,
     undoDelete,
   ]);
@@ -1018,6 +1108,8 @@ export default function App() {
         onNewNote={() => void newDraft()}
         onOpenFile={openFilePicker}
         onOpenFolder={openFolderPicker}
+        onOpenFileNewWindow={() => void openFileInNewWindow()}
+        onOpenFolderNewWindow={() => void openFolderInNewWindow()}
         onOpenRecent={openRecent}
       />
     </div>
@@ -1060,6 +1152,8 @@ function Settings({
   onNewNote,
   onOpenFile,
   onOpenFolder,
+  onOpenFileNewWindow,
+  onOpenFolderNewWindow,
   onOpenRecent,
 }: {
   theme: Theme;
@@ -1068,6 +1162,8 @@ function Settings({
   onNewNote: () => void;
   onOpenFile: () => void;
   onOpenFolder: () => void;
+  onOpenFileNewWindow: () => void;
+  onOpenFolderNewWindow: () => void;
   onOpenRecent: (r: RecentEntry) => void;
 }) {
   const [open, setOpen] = useState(false);
@@ -1131,6 +1227,30 @@ function Settings({
             <span className="settings-option-check" />
             <span className="settings-option-label">Open folder…</span>
             <span className="settings-option-kbd">⌘⇧O</span>
+          </button>
+          <button
+            role="menuitem"
+            className="settings-option"
+            onClick={() => {
+              setOpen(false);
+              onOpenFileNewWindow();
+            }}
+          >
+            <span className="settings-option-check" />
+            <span className="settings-option-label">Open file in new window…</span>
+            <span className="settings-option-kbd">⌘⌥O</span>
+          </button>
+          <button
+            role="menuitem"
+            className="settings-option"
+            onClick={() => {
+              setOpen(false);
+              onOpenFolderNewWindow();
+            }}
+          >
+            <span className="settings-option-check" />
+            <span className="settings-option-label">Open folder in new window…</span>
+            <span className="settings-option-kbd">⌘⌥⇧O</span>
           </button>
           {recents.length > 0 && (
             <>

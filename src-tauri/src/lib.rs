@@ -5,7 +5,9 @@
 //! `macOS-only` so a future cross-platform effort can `grep "macOS-only"` to find
 //! every place that needs a portable fallback.
 
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, UNIX_EPOCH};
 
@@ -18,6 +20,166 @@ use tauri::{AppHandle, Emitter, Manager, RunEvent, State};
 struct PendingOpen {
     file: Mutex<Option<String>>,
     folder: Mutex<Option<String>>,
+}
+
+/// What a single window currently shows: its workspace folder (if any) and the
+/// real-file paths open in its tabs. The renderer keeps this current via
+/// `register_window_content`, so the backend can focus an existing window that
+/// already shows a path instead of opening a duplicate.
+#[derive(Default)]
+struct WindowContent {
+    folder: Option<String>,
+    files: HashSet<String>,
+}
+
+#[derive(Default)]
+struct WindowRegistry(Mutex<HashMap<String, WindowContent>>);
+
+/// Monotonic counter for spawned-window labels (`win-1`, `win-2`, …). Never
+/// reused within a process, so labels stay unique among live windows.
+#[derive(Default)]
+struct WindowSeq(Mutex<u32>);
+
+/// Flipped true once any window has reported its content. Until then an external
+/// open is treated as the cold-start path (handed to the first window via
+/// `PendingOpen`); afterwards it routes to a focused/new window.
+#[derive(Default)]
+struct AppReady(AtomicBool);
+
+fn enc(s: &str) -> String {
+    url::form_urlencoded::byte_serialize(s.as_bytes()).collect()
+}
+
+/// Stable cross-window ordering for ⌘` cycling: the config window ("main")
+/// first, then spawned windows ("win-N") in creation order.
+fn win_order(label: &str) -> (u8, u32) {
+    if label == "main" {
+        (0, 0)
+    } else if let Some(n) = label.strip_prefix("win-").and_then(|s| s.parse::<u32>().ok()) {
+        (1, n)
+    } else {
+        (2, 0)
+    }
+}
+
+/// Finds a live window already showing the requested content. Folder identity
+/// wins (a window *is* its workspace); otherwise match a window that has the
+/// file open. Stale registry entries (window already closed) are skipped.
+fn find_window_for(
+    app: &AppHandle,
+    folder: &Option<String>,
+    file: &Option<String>,
+) -> Option<String> {
+    let map = app.state::<WindowRegistry>();
+    let map = map.0.lock().ok()?;
+    if let Some(f) = folder {
+        for (label, c) in map.iter() {
+            if c.folder.as_deref() == Some(f.as_str()) && app.get_webview_window(label).is_some() {
+                return Some(label.clone());
+            }
+        }
+    }
+    if let Some(f) = file {
+        for (label, c) in map.iter() {
+            if c.files.contains(f) && app.get_webview_window(label).is_some() {
+                return Some(label.clone());
+            }
+        }
+    }
+    None
+}
+
+/// Opens a fresh window initialized with `folder`/`file`, passed through the URL
+/// query so the renderer can read its own initial content without racing on
+/// shared state. Must run on the main thread.
+fn spawn_open_window(app: &AppHandle, folder: Option<String>, file: Option<String>) {
+    let n = {
+        let seq = app.state::<WindowSeq>();
+        let mut g = seq.0.lock().unwrap();
+        *g += 1;
+        *g
+    };
+    let label = format!("win-{}", n);
+
+    let mut parts = Vec::new();
+    if let Some(f) = &folder {
+        parts.push(format!("folder={}", enc(f)));
+    }
+    if let Some(f) = &file {
+        parts.push(format!("file={}", enc(f)));
+    }
+    let url = if parts.is_empty() {
+        "index.html".to_string()
+    } else {
+        format!("index.html?{}", parts.join("&"))
+    };
+
+    let mut builder =
+        tauri::WebviewWindowBuilder::new(app, &label, tauri::WebviewUrl::App(url.into()))
+            .title("MDE")
+            .inner_size(960.0, 720.0)
+            .min_inner_size(480.0, 320.0);
+    #[cfg(target_os = "macos")]
+    {
+        builder = builder
+            .title_bar_style(tauri::TitleBarStyle::Overlay)
+            .hidden_title(true)
+            .traffic_light_position(tauri::LogicalPosition::new(16.0, 18.0));
+    }
+    if let Err(e) = builder.build() {
+        eprintln!("failed to open new window: {}", e);
+    }
+}
+
+/// Focus a window already showing this content, or spawn a new one. When we
+/// focus an existing folder window that doesn't yet have the requested file
+/// open, we ask just that window to open it as a tab. Must run on the main
+/// thread (window creation/focus is main-thread only on macOS).
+fn route_open(app: &AppHandle, folder: Option<String>, file: Option<String>) {
+    if let Some(label) = find_window_for(app, &folder, &file) {
+        if let Some(win) = app.get_webview_window(&label) {
+            let _ = win.unminimize();
+            let _ = win.set_focus();
+            if let Some(f) = &file {
+                let already_open = app
+                    .state::<WindowRegistry>()
+                    .0
+                    .lock()
+                    .ok()
+                    .and_then(|m| m.get(&label).map(|c| c.files.contains(f)))
+                    .unwrap_or(false);
+                if !already_open {
+                    let _ = win.emit("open-file", OpenFilePayload { path: f.clone() });
+                }
+            }
+            return;
+        }
+    }
+    spawn_open_window(app, folder, file);
+}
+
+/// Entry point for every external open (CLI second-instance, macOS file-open).
+/// Before any window has reported readiness this is a cold start, so the path is
+/// handed to the first window via `PendingOpen`; afterwards it routes to a
+/// focused or freshly spawned window.
+fn handle_external_open(app: &AppHandle, folder: Option<PathBuf>, file: Option<PathBuf>) {
+    let folder = folder.map(|p| p.to_string_lossy().to_string());
+    let file = file.map(|p| p.to_string_lossy().to_string());
+    if folder.is_none() && file.is_none() {
+        return;
+    }
+    let ready = app.state::<AppReady>().0.load(Ordering::SeqCst);
+    if !ready {
+        let st = app.state::<PendingOpen>();
+        if let (Some(f), Ok(mut g)) = (&folder, st.folder.lock()) {
+            *g = Some(f.clone());
+        }
+        if let (Some(f), Ok(mut g)) = (&file, st.file.lock()) {
+            *g = Some(f.clone());
+        }
+        return;
+    }
+    route_open(app, folder, file);
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -50,11 +212,6 @@ struct OpenFilePayload {
 struct ExternalChangePayload {
     path: String,
     snapshot: FileSnapshot,
-}
-
-#[derive(Clone, Serialize)]
-struct OpenFolderPayload {
-    path: String,
 }
 
 #[derive(Serialize)]
@@ -345,6 +502,62 @@ fn take_pending_folder(state: State<'_, PendingOpen>) -> Option<String> {
     state.folder.lock().ok().and_then(|mut g| g.take())
 }
 
+/// The renderer reports what this window currently shows (its workspace folder
+/// and the real files open in tabs) so external opens can focus the right
+/// window instead of duplicating it. Also marks the app "ready" so subsequent
+/// external opens route to windows rather than the cold-start pending-open path.
+#[tauri::command]
+fn register_window_content(
+    window: tauri::Window,
+    folder: Option<String>,
+    files: Vec<String>,
+    registry: State<'_, WindowRegistry>,
+    ready: State<'_, AppReady>,
+) {
+    if let Ok(mut map) = registry.0.lock() {
+        map.insert(
+            window.label().to_string(),
+            WindowContent {
+                folder,
+                files: files.into_iter().collect(),
+            },
+        );
+    }
+    ready.0.store(true, Ordering::SeqCst);
+}
+
+/// Open a file/folder in a new window (focusing an existing window that already
+/// shows it). Invoked by the in-app "open in new window" shortcuts. Dispatches
+/// to the main thread because window creation is main-thread only on macOS.
+#[tauri::command]
+fn open_in_window(app: AppHandle, folder: Option<String>, file: Option<String>) {
+    let handle = app.clone();
+    let _ = app.run_on_main_thread(move || route_open(&handle, folder, file));
+}
+
+/// Cycle focus to the next (or previous, with `backward`) app window — the
+/// backing for ⌘` (Safari-style window switching). Windows are visited in a
+/// stable order (main, then win-N). Main-thread only on macOS.
+#[tauri::command]
+fn focus_next_window(window: tauri::Window, app: AppHandle, backward: bool) {
+    let current = window.label().to_string();
+    let handle = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        let mut labels: Vec<String> = handle.webview_windows().into_keys().collect();
+        if labels.len() < 2 {
+            return;
+        }
+        labels.sort_by_key(|l| win_order(l));
+        let idx = labels.iter().position(|l| l == &current).unwrap_or(0);
+        let n = labels.len();
+        let next = if backward { (idx + n - 1) % n } else { (idx + 1) % n };
+        if let Some(win) = handle.get_webview_window(&labels[next]) {
+            let _ = win.unminimize();
+            let _ = win.set_focus();
+        }
+    });
+}
+
 #[derive(Serialize)]
 struct DraftInfo {
     id: String,
@@ -566,22 +779,12 @@ pub fn run() {
         builder = builder.plugin(tauri_plugin_single_instance::init(
             |app, argv, _cwd| {
                 let (folder, file) = classify_argv(&argv);
-                if let Some(p) = folder {
-                    let _ = app.emit(
-                        "open-folder",
-                        OpenFolderPayload { path: p.to_string_lossy().to_string() },
-                    );
-                }
-                if let Some(p) = file {
-                    let _ = app.emit(
-                        "open-file",
-                        OpenFilePayload { path: p.to_string_lossy().to_string() },
-                    );
-                }
-                if let Some(win) = app.get_webview_window("main") {
-                    let _ = win.set_focus();
-                    let _ = win.unminimize();
-                }
+                // Route on the main thread: a second launch opens (or focuses) a
+                // window rather than reusing the existing one.
+                let handle = app.clone();
+                let _ = app.run_on_main_thread(move || {
+                    handle_external_open(&handle, folder, file);
+                });
             },
         ));
     }
@@ -590,6 +793,9 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .manage(PendingOpen::default())
         .manage(WatcherStore::default())
+        .manage(WindowRegistry::default())
+        .manage(WindowSeq::default())
+        .manage(AppReady::default())
         .invoke_handler(tauri::generate_handler![
             read_file,
             write_file,
@@ -598,6 +804,9 @@ pub fn run() {
             list_md_tree,
             take_pending_open,
             take_pending_folder,
+            register_window_content,
+            open_in_window,
+            focus_next_window,
             create_draft,
             list_drafts,
             delete_draft,
@@ -626,19 +835,14 @@ pub fn run() {
     app.run(|app, event| {
         #[cfg(any(target_os = "macos", target_os = "ios"))]
         if let RunEvent::Opened { urls } = &event {
+            // The RunEvent loop is already on the main thread, so routing
+            // (which may create/focus a window) is safe to call directly.
             for u in urls {
                 if let Ok(p) = u.to_file_path() {
-                    let path_str = p.to_string_lossy().to_string();
                     if p.is_dir() {
-                        if let Ok(mut g) = app.state::<PendingOpen>().folder.lock() {
-                            *g = Some(path_str.clone());
-                        }
-                        let _ = app.emit("open-folder", OpenFolderPayload { path: path_str });
+                        handle_external_open(app, Some(p), None);
                     } else {
-                        if let Ok(mut g) = app.state::<PendingOpen>().file.lock() {
-                            *g = Some(path_str.clone());
-                        }
-                        let _ = app.emit("open-file", OpenFilePayload { path: path_str });
+                        handle_external_open(app, None, Some(p));
                     }
                 }
             }
