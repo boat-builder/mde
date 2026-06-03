@@ -136,8 +136,15 @@ fn spawn_open_window(app: &AppHandle, folder: Option<String>, file: Option<Strin
             .hidden_title(true)
             .traffic_light_position(tauri::LogicalPosition::new(16.0, 18.0));
     }
-    if let Err(e) = builder.build() {
-        eprintln!("failed to open new window: {}", e);
+    match builder.build() {
+        // Bring the new window (and the app) to the foreground. When the spawn
+        // is triggered from the terminal shim, MDE is a background app, so the
+        // window would otherwise open behind whatever is focused. set_focus
+        // activates the app and makes the window key.
+        Ok(win) => {
+            let _ = win.set_focus();
+        }
+        Err(e) => eprintln!("failed to open new window: {}", e),
     }
 }
 
