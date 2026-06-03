@@ -76,6 +76,27 @@ fn win_order(label: &str) -> (u8, u32) {
     }
 }
 
+/// Per-window diagonal offset (logical px) so stacked windows are visibly
+/// staggered (like VS Code) — otherwise toggling between instances looks like
+/// one window whose content just changed.
+const CASCADE_STEP: f64 = 32.0;
+/// How many steps before the cascade wraps back, so windows never march off the
+/// bottom-right of the screen.
+const CASCADE_WRAP: u32 = 8;
+
+/// Where to place spawned window number `n`: anchored on the lowest-ordered live
+/// window (the main window when present) and offset diagonally by a bounded,
+/// cycling step. Logical screen coordinates. None when no anchor/position is
+/// available, in which case the OS default placement is used.
+fn cascade_position(app: &AppHandle, n: u32) -> Option<(f64, f64)> {
+    let wins = app.webview_windows();
+    let anchor = wins.values().min_by_key(|w| win_order(w.label()))?;
+    let scale = anchor.scale_factor().ok()?;
+    let base = anchor.outer_position().ok()?.to_logical::<f64>(scale);
+    let step = CASCADE_STEP * (((n - 1) % CASCADE_WRAP) + 1) as f64;
+    Some((base.x + step, base.y + step))
+}
+
 /// Finds a live window already showing the requested content. Folder identity
 /// wins (a window *is* its workspace); otherwise match a window that has the
 /// file open. Stale registry entries (window already closed) are skipped.
@@ -129,6 +150,9 @@ fn spawn_open_window(app: &AppHandle, folder: Option<String>, file: Option<Strin
     .title("MDE")
     .inner_size(960.0, 720.0)
     .min_inner_size(480.0, 320.0);
+    if let Some((x, y)) = cascade_position(app, n) {
+        builder = builder.position(x, y);
+    }
     #[cfg(target_os = "macos")]
     {
         builder = builder
