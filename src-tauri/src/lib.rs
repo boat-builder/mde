@@ -243,6 +243,13 @@ enum TreeNode {
 const MAX_TREE_DEPTH: usize = 12;
 const MAX_TREE_ENTRIES: usize = 5000;
 
+// Caps for workspace search, so a one-character query over a huge folder stays
+// bounded in time and payload size.
+const MAX_SEARCH_FILES: usize = 2000;
+const MAX_MATCHES_PER_FILE: usize = 200;
+const MAX_TOTAL_MATCHES: usize = 5000;
+const SEARCH_PREVIEW_MAX: usize = 200;
+
 fn is_markdown(path: &Path) -> bool {
     match path.extension().and_then(|e| e.to_str()) {
         Some(ext) => matches!(ext.to_ascii_lowercase().as_str(), "md" | "markdown" | "mdown" | "mkd"),
@@ -502,6 +509,140 @@ fn list_md_tree(path: String) -> Result<TreeNode, String> {
             children: Vec::new(),
         })
     }
+}
+
+#[derive(Serialize)]
+struct SearchMatchInfo {
+    /// 1-based line number of the match within the file.
+    line: usize,
+    /// 0-based character column of the first match on the line.
+    column: usize,
+    /// The (trimmed, truncated) line text, for display in the results list.
+    preview: String,
+}
+
+#[derive(Serialize)]
+struct FileMatches {
+    path: String,
+    name: String,
+    matches: Vec<SearchMatchInfo>,
+}
+
+/// Collects markdown file paths under `dir` (depth-first), skipping the same
+/// hidden/ignored directories as the file tree. Mirrors `walk`'s traversal but
+/// gathers a flat file list instead of building a pruned tree.
+fn collect_md_files(dir: &Path, depth: usize, budget: &mut usize, out: &mut Vec<PathBuf>) {
+    if depth > MAX_TREE_DEPTH || *budget == 0 {
+        return;
+    }
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+    let mut subdirs: Vec<PathBuf> = Vec::new();
+    for entry in entries.flatten() {
+        if *budget == 0 {
+            break;
+        }
+        *budget -= 1;
+        let path = entry.path();
+        let name = entry.file_name();
+        let name_str = name.to_string_lossy();
+        if is_hidden_or_ignored(&name_str) {
+            continue;
+        }
+        let ft = match entry.file_type() {
+            Ok(ft) => ft,
+            Err(_) => continue,
+        };
+        if ft.is_dir() {
+            subdirs.push(path);
+        } else if ft.is_file() && is_markdown(&path) {
+            out.push(path);
+        }
+    }
+    subdirs.sort();
+    for sub in subdirs {
+        collect_md_files(&sub, depth + 1, budget, out);
+    }
+}
+
+/// Greps every markdown file under `root` for `query`, returning per-file
+/// matches with 1-based line numbers and a preview of each matching line.
+/// Case-insensitive unless `case_sensitive`. Results are bounded by the
+/// MAX_* caps so a broad query stays responsive.
+#[tauri::command]
+fn search_workspace(
+    root: String,
+    query: String,
+    case_sensitive: bool,
+) -> Result<Vec<FileMatches>, String> {
+    let root_path = PathBuf::from(&root);
+    if !root_path.is_dir() {
+        return Err(format!("not a directory: {}", root));
+    }
+    let needle_raw = query.trim();
+    if needle_raw.is_empty() {
+        return Ok(Vec::new());
+    }
+    let needle = if case_sensitive {
+        needle_raw.to_string()
+    } else {
+        needle_raw.to_lowercase()
+    };
+
+    let mut files: Vec<PathBuf> = Vec::new();
+    let mut budget = MAX_TREE_ENTRIES;
+    collect_md_files(&root_path, 0, &mut budget, &mut files);
+    files.sort();
+    files.truncate(MAX_SEARCH_FILES);
+
+    let mut results: Vec<FileMatches> = Vec::new();
+    let mut total = 0usize;
+    'files: for file in files {
+        if total >= MAX_TOTAL_MATCHES {
+            break;
+        }
+        let contents = match std::fs::read_to_string(&file) {
+            Ok(c) => c,
+            Err(_) => continue, // skip binary/unreadable files
+        };
+        let mut matches: Vec<SearchMatchInfo> = Vec::new();
+        for (i, line) in contents.lines().enumerate() {
+            let hay = if case_sensitive {
+                line.to_string()
+            } else {
+                line.to_lowercase()
+            };
+            if let Some(byte_idx) = hay.find(&needle) {
+                let column = hay[..byte_idx].chars().count();
+                let preview: String = line.trim().chars().take(SEARCH_PREVIEW_MAX).collect();
+                matches.push(SearchMatchInfo {
+                    line: i + 1,
+                    column,
+                    preview,
+                });
+                total += 1;
+                if matches.len() >= MAX_MATCHES_PER_FILE || total >= MAX_TOTAL_MATCHES {
+                    break;
+                }
+            }
+        }
+        if !matches.is_empty() {
+            results.push(FileMatches {
+                path: file.to_string_lossy().to_string(),
+                name: file
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_default(),
+                matches,
+            });
+        }
+        if total >= MAX_TOTAL_MATCHES {
+            break 'files;
+        }
+    }
+    Ok(results)
 }
 
 #[tauri::command]
@@ -836,6 +977,7 @@ pub fn run() {
             watch_file,
             unwatch_file,
             list_md_tree,
+            search_workspace,
             take_pending_open,
             take_pending_folder,
             register_window_content,
