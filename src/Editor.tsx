@@ -2,6 +2,8 @@ import { forwardRef, useImperativeHandle, useRef } from "react";
 import { Crepe } from "@milkdown/crepe";
 import { Milkdown, MilkdownProvider, useEditor } from "@milkdown/react";
 import { editorViewCtx } from "@milkdown/kit/core";
+import type { Ctx } from "@milkdown/kit/ctx";
+import { TextSelection } from "@milkdown/kit/prose/state";
 import type { EditorView } from "@milkdown/kit/prose/view";
 import {
   searchKey,
@@ -10,6 +12,7 @@ import {
   type SearchInfo,
   type SearchMeta,
 } from "./searchPlugin";
+import { criticDecorationPlugin, criticCopyPlugin } from "./criticPlugin";
 
 import "@milkdown/crepe/theme/common/style.css";
 import "@milkdown/crepe/theme/frame.css";
@@ -32,6 +35,32 @@ type Props = {
 
 function dispatchMeta(view: EditorView, meta: SearchMeta) {
   view.dispatch(view.state.tr.setMeta(searchKey, meta));
+}
+
+// Speech-bubble icon for the selection-toolbar "Comment" button. Crepe renders
+// the toolbar icon from a raw SVG string (same as its built-in bold/italic).
+const commentIcon = `
+  <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z" />
+  </svg>
+`;
+
+// Wrap the current selection as a CriticMarkup comment: {==selected==}{>>...<<}
+// then drop the caret inside the (empty) comment so the user types it straight
+// away. No-op on an empty selection — there's nothing to comment on.
+function wrapSelectionAsComment(ctx: Ctx) {
+  const view = ctx.get(editorViewCtx);
+  const { from, to, empty } = view.state.selection;
+  if (empty) return;
+  const selected = view.state.doc.textBetween(from, to);
+  const prefix = `{==${selected}==}{>>`;
+  const wrapped = `${prefix}<<}`;
+  const tr = view.state.tr.insertText(wrapped, from, to);
+  // Caret position is `from + prefix.length` — just after `{>>`, before `<<}`.
+  const caret = from + prefix.length;
+  tr.setSelection(TextSelection.create(tr.doc, caret));
+  view.dispatch(tr.scrollIntoView());
+  view.focus();
 }
 
 function infoOf(view: EditorView): SearchInfo {
@@ -88,9 +117,22 @@ const MilkdownInner = forwardRef<EditorHandle, Props>(function MilkdownInner(
           text: "Type / for commands…",
           mode: "doc",
         },
+        toolbar: {
+          // Add a "Comment" button to the selection toolbar (its own group so we
+          // don't depend on a built-in group key).
+          buildToolbar: (builder) => {
+            builder.addGroup("critic-markup", "Comment").addItem("comment", {
+              icon: commentIcon,
+              active: () => false,
+              onRun: wrapSelectionAsComment,
+            });
+          },
+        },
       },
     });
     crepe.editor.use(searchPlugin);
+    crepe.editor.use(criticDecorationPlugin);
+    crepe.editor.use(criticCopyPlugin);
     crepe.on((api) => {
       api.markdownUpdated((_ctx, markdown) => {
         onChangeRef.current(markdown);
