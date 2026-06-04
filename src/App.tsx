@@ -590,6 +590,17 @@ export default function App() {
     [setWorkspace, openTab],
   );
 
+  // Copy the document verbatim — CriticMarkup markers and comments intact (the
+  // "full" working format for collaborators using the same tool). Plain ⌘C, by
+  // contrast, always copies clean (markers stripped) via the editor's copy hook.
+  const copyWithComments = useCallback(async () => {
+    try {
+      await navigator.clipboard.writeText(currentMarkdownRef.current);
+    } catch (e) {
+      console.error("copy with comments failed", e);
+    }
+  }, []);
+
   const revealInFinder = useCallback(async (target: string) => {
     try {
       await invoke("reveal_in_finder", { path: target });
@@ -1246,6 +1257,8 @@ export default function App() {
         onOpenFileNewWindow={() => void openFileInNewWindow()}
         onOpenFolderNewWindow={() => void openFolderInNewWindow()}
         onOpenRecent={openRecent}
+        canCopyWithComments={activeTab != null}
+        onCopyWithComments={() => void copyWithComments()}
       />
     </div>
   );
@@ -1290,6 +1303,8 @@ function Settings({
   onOpenFileNewWindow,
   onOpenFolderNewWindow,
   onOpenRecent,
+  canCopyWithComments,
+  onCopyWithComments,
 }: {
   theme: Theme;
   onChange: (t: Theme) => void;
@@ -1300,6 +1315,8 @@ function Settings({
   onOpenFileNewWindow: () => void;
   onOpenFolderNewWindow: () => void;
   onOpenRecent: (r: RecentEntry) => void;
+  canCopyWithComments: boolean;
+  onCopyWithComments: () => void;
 }) {
   const [open, setOpen] = useState(false);
   const wrapRef = useRef<HTMLDivElement>(null);
@@ -1387,6 +1404,24 @@ function Settings({
             <span className="settings-option-label">Open folder in new window…</span>
             <span className="settings-option-kbd">⌘⌥⇧O</span>
           </button>
+          {canCopyWithComments && (
+            <>
+              <div className="settings-divider" />
+              <div className="settings-section-label">Document</div>
+              <button
+                role="menuitem"
+                className="settings-option"
+                onClick={() => {
+                  setOpen(false);
+                  onCopyWithComments();
+                }}
+                title="Copy the whole document with CriticMarkup comments intact"
+              >
+                <span className="settings-option-check" />
+                <span className="settings-option-label">Copy with comments</span>
+              </button>
+            </>
+          )}
           {recents.length > 0 && (
             <>
               <div className="settings-divider" />
