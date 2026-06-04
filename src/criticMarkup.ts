@@ -1,16 +1,19 @@
 // CriticMarkup editorial comments — pure string helpers (no editor deps).
 //
-// We support exactly one CriticMarkup marker: a highlight+comment pair
+// Comments are modelled in the editor as a first-class `critic_comment` inline
+// mark (see criticMark.ts); CriticMarkup is just the on-disk markdown
+// serialization of that mark:
+//
 //   {==highlighted text==}{>>the comment<<}
-// The braces live verbatim in the document text (and on disk), so markdown
-// round-trips losslessly with zero special handling. These helpers cover the
-// two things that *aren't* "leave it as text": rendering (where the braces are)
-// and the clean-copy transform (strip the braces+comment for distribution).
+//
+// These pure helpers cover the two places where the format is handled as a
+// string: the remark round-trip (the shared regex) and the clean-copy transform.
 
-// A full highlight+comment pair. Group 1 = highlighted text, group 2 = comment.
-// `[\s\S]` (not `.`) so a span/comment can contain anything but the delimiters;
-// non-greedy so adjacent markers don't merge into one match.
-export const COMMENT_RE = /\{==([\s\S]*?)==\}\{>>([\s\S]*?)<<\}/g;
+// A full highlight+comment pair. Group 1 = anchor (highlighted text), group 2 =
+// comment body. `[\s\S]` (not `.`) so either part can contain anything but the
+// delimiters; non-greedy so adjacent markers don't merge into one match. The
+// anchor must be non-empty; the body may be empty (a highlight with no note yet).
+export const CRITIC_RE = /\{==([\s\S]+?)==\}\{>>([\s\S]*?)<<\}/g;
 
 // The clean / "accept" transform: drop comments entirely, unwrap highlights to
 // their plain text. This is what plain ⌘C copies, so a marked-up document never
@@ -23,58 +26,4 @@ export function stripComments(md: string): string {
   return md
     .replace(/\{>>[\s\S]*?<<\}/g, "")
     .replace(/\{==([\s\S]*?)==\}/g, "$1");
-}
-
-// One parsed comment marker, with character offsets into the scanned string for
-// each piece the decoration layer styles independently.
-export type CommentRange = {
-  // The four brace delimiters (each a [start, end) offset pair).
-  openHl: [number, number]; // "{=="
-  closeHl: [number, number]; // "==}"
-  openCm: [number, number]; // "{>>"
-  closeCm: [number, number]; // "<<}"
-  // The highlighted span and the comment text between the delimiters.
-  highlight: [number, number];
-  comment: [number, number];
-  // The comment's text content (for the highlight's hover tooltip).
-  commentText: string;
-};
-
-const OPEN_HL = "{==";
-const CLOSE_HL = "==}";
-const OPEN_CM = "{>>";
-const CLOSE_CM = "<<}";
-
-// Scan a single string for comment markers and return each piece's offsets.
-// The decoration plugin runs this per text node, offsetting by the node's
-// position. A fresh RegExp is used per call so the shared `COMMENT_RE` lastIndex
-// is never a cross-call footgun.
-export function findCommentRanges(text: string): CommentRange[] {
-  const ranges: CommentRange[] = [];
-  const re = new RegExp(COMMENT_RE.source, "g");
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(text)) !== null) {
-    const start = m.index;
-    const highlight = m[1];
-    const comment = m[2];
-    const openHlEnd = start + OPEN_HL.length;
-    const hlEnd = openHlEnd + highlight.length;
-    const closeHlEnd = hlEnd + CLOSE_HL.length;
-    const openCmEnd = closeHlEnd + OPEN_CM.length;
-    const cmEnd = openCmEnd + comment.length;
-    const closeCmEnd = cmEnd + CLOSE_CM.length;
-    ranges.push({
-      openHl: [start, openHlEnd],
-      highlight: [openHlEnd, hlEnd],
-      closeHl: [hlEnd, closeHlEnd],
-      openCm: [closeHlEnd, openCmEnd],
-      comment: [openCmEnd, cmEnd],
-      closeCm: [cmEnd, closeCmEnd],
-      commentText: comment,
-    });
-    // Guard against a zero-length match looping forever (can't happen with these
-    // fixed delimiters, but keeps the loop honest).
-    if (re.lastIndex === start) re.lastIndex++;
-  }
-  return ranges;
 }

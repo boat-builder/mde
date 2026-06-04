@@ -1122,31 +1122,122 @@ body,
 
 /* ---------- CriticMarkup editorial comments ---------- */
 
-/* The highlighted span of a {==..==}{>>..<<} comment. Hovering shows the
-   comment text via the decoration's native `title` tooltip. */
-.editor-wrap .milkdown .ProseMirror .critic-highlight {
-  background: rgba(255, 214, 0, 0.32);
+/* The highlighted anchor span. Rendered by the `critic_comment` mark's toDOM
+   (<span class="critic-anchor">), so the highlight is part of the document
+   model — delete the text and the highlight (and its note) go with it. */
+.editor-wrap .milkdown .ProseMirror .critic-anchor {
+  background: rgba(255, 214, 0, 0.3);
   border-radius: 2px;
-  cursor: help;
+  cursor: pointer;
+  transition: background 0.12s ease;
 }
-[data-theme="dark"] .editor-wrap .milkdown .ProseMirror .critic-highlight {
-  background: rgba(255, 214, 0, 0.24);
+[data-theme="dark"] .editor-wrap .milkdown .ProseMirror .critic-anchor {
+  background: rgba(255, 214, 0, 0.22);
 }
 
-/* The comment text itself — kept visible (so it stays editable) but styled as a
-   dim inline margin note rather than body copy. */
-.editor-wrap .milkdown .ProseMirror .critic-comment {
+/* The anchor of the comment whose card is selected in the rail (painted by the
+   criticActivePlugin decoration). */
+.editor-wrap .milkdown .ProseMirror .critic-anchor-active {
+  background: rgba(255, 145, 0, 0.5);
+  box-shadow: 0 0 0 1px rgba(255, 145, 0, 0.75);
+}
+
+/* Reserve a right-hand gutter for the comment rail when comments exist; the
+   centered content column shifts left into the remaining space. */
+.editor-wrap.has-comments .milkdown .ProseMirror {
+  margin-right: 296px;
+}
+
+/* The rail itself: absolutely positioned inside the (scrolling, position:
+   relative) editor canvas, so cards translate with the content as it scrolls.
+   The empty rail doesn't eat clicks; only the cards do. */
+.comments-rail {
+  position: absolute;
+  top: 0;
+  right: 16px;
+  width: 264px;
+  pointer-events: none;
+  z-index: 5;
+}
+
+.comment-card {
+  position: absolute;
+  right: 0;
+  width: 264px;
+  box-sizing: border-box;
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 10px 10px 10px 12px;
+  background: var(--app-surface);
+  border: 1px solid var(--app-border);
+  border-left: 3px solid rgba(255, 145, 0, 0.55);
+  border-radius: 8px;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.08);
+  pointer-events: auto;
+  transition: box-shadow 0.12s ease, border-color 0.12s ease, top 0.12s ease;
+  cursor: pointer;
+}
+
+.comment-card.is-active {
+  border-left-color: rgba(255, 145, 0, 1);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.16);
+}
+
+.comment-card-body {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--app-text);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.comment-card-empty {
   color: var(--app-text-muted);
   font-style: italic;
-  font-size: 0.85em;
 }
 
-/* The four brace delimiters ({== ==} {>> <<}). Collapsed to zero width so the
-   working syntax recedes — the text stays in the doc for a lossless markdown
-   round-trip; we just don't paint the braces. (Not display:none, which causes
-   caret/selection glitches inside contenteditable.) */
-.editor-wrap .milkdown .ProseMirror .critic-syntax {
-  font-size: 0;
+.comment-card-input {
+  flex: 1;
+  min-width: 0;
+  resize: none;
+  border: none;
+  outline: none;
+  background: transparent;
+  color: var(--app-text);
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.45;
+  min-height: 40px;
+}
+
+.comment-card-delete {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--app-text-muted);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.12s ease, background 0.12s ease, color 0.12s ease;
+}
+
+.comment-card:hover .comment-card-delete,
+.comment-card.is-active .comment-card-delete {
+  opacity: 1;
+}
+
+.comment-card-delete:hover {
+  background: var(--app-hover);
+  color: var(--app-text);
 }
 
 .find-bar {

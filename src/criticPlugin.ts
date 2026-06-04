@@ -1,12 +1,11 @@
-// CriticMarkup editorial comments — Milkdown (ProseMirror) plugins.
+// CriticMarkup editorial comments — Milkdown (ProseMirror) $prose plugins.
 //
-// Two plugins, both built the same way the search plugin is (see
-// src/searchPlugin.ts):
+// The persistent highlight + comment body live in the `critic_comment` mark
+// (see criticMark.ts). These two plugins cover the *ephemeral* / view concerns:
 //
-//   criticDecorationPlugin — renders the literal `{==..==}{>>..<<}` text as a
-//     highlight with the brace delimiters collapsed, so the working syntax reads
-//     as a comment affordance instead of raw braces. The text stays in the doc,
-//     so markdown round-trips losslessly.
+//   criticActivePlugin — paints the "active" comment (the one whose card is
+//     selected in the rail) with an extra decoration. Active state is transient
+//     UI, not document data, so it lives here rather than on the mark.
 //
 //   criticCopyPlugin — intercepts copy/cut so the clipboard gets the *clean*
 //     markdown (markers stripped). The verbatim "with comments" copy is a
@@ -18,49 +17,55 @@ import { Plugin, PluginKey } from "@milkdown/kit/prose/state";
 import { Decoration, DecorationSet } from "@milkdown/kit/prose/view";
 import type { EditorView } from "@milkdown/kit/prose/view";
 import type { Node as ProseNode, Schema } from "@milkdown/kit/prose/model";
-import { findCommentRanges, stripComments } from "./criticMarkup";
+import { stripComments } from "./criticMarkup";
 
-// Build the decoration set for the whole doc by scanning every text node for
-// comment markers (same shape as searchPlugin's findMatches + buildDecorations).
-function buildDecorations(doc: ProseNode): DecorationSet {
-  const decos: Decoration[] = [];
-  doc.descendants((node, pos) => {
-    if (!node.isText || !node.text) return undefined;
-    for (const r of findCommentRanges(node.text)) {
-      const syntax = (range: [number, number]) =>
-        Decoration.inline(pos + range[0], pos + range[1], { class: "critic-syntax" });
-      decos.push(syntax(r.openHl), syntax(r.closeHl), syntax(r.openCm), syntax(r.closeCm));
-      decos.push(
-        Decoration.inline(pos + r.highlight[0], pos + r.highlight[1], {
-          class: "critic-highlight",
-          // Native tooltip — hovering the highlight surfaces the comment text.
-          title: r.commentText,
-        }),
-      );
-      decos.push(
-        Decoration.inline(pos + r.comment[0], pos + r.comment[1], { class: "critic-comment" }),
-      );
-    }
-    return undefined;
-  });
-  return decos.length === 0 ? DecorationSet.empty : DecorationSet.create(doc, decos);
-}
+// --- Active comment highlight ---
 
-export const criticDecorationPlugin = $prose(
+export type ActiveRange = { from: number; to: number } | null;
+
+export const criticActiveKey = new PluginKey<ActiveRange>("mde-critic-active");
+
+export const criticActivePlugin = $prose(
   () =>
-    new Plugin({
-      key: new PluginKey("mde-critic-decoration"),
+    new Plugin<ActiveRange>({
+      key: criticActiveKey,
+      state: {
+        init: () => null,
+        apply(tr, value) {
+          // A set/clear request wins outright (meta is `null` to clear).
+          const meta = tr.getMeta(criticActiveKey) as ActiveRange | undefined;
+          if (meta !== undefined) return meta;
+          // Otherwise keep the range glued to its text across edits.
+          if (value && tr.docChanged) {
+            const from = tr.mapping.map(value.from);
+            const to = tr.mapping.map(value.to);
+            return to > from ? { from, to } : null;
+          }
+          return value;
+        },
+      },
       props: {
         decorations(state) {
-          return buildDecorations(state.doc);
+          const r = criticActiveKey.getState(state);
+          if (!r) return null;
+          return DecorationSet.create(state.doc, [
+            Decoration.inline(r.from, r.to, { class: "critic-anchor-active" }),
+          ]);
         },
       },
     }),
 );
 
+// Set (or clear, with null) which comment is visually active.
+export function setActiveComment(view: EditorView, range: ActiveRange): void {
+  view.dispatch(view.state.tr.setMeta(criticActiveKey, range));
+}
+
+// --- Clean copy / cut ---
+
 // Serialize the current selection to markdown exactly the way Milkdown's own
-// clipboard plugin does (@milkdown/plugin-clipboard), so a copied span comes out
-// as the same markdown it would normally — then we strip the comment markers.
+// clipboard plugin does (@milkdown/plugin-clipboard). With the comment mark in
+// place this naturally emits CriticMarkup, which stripComments then cleans.
 function selectionMarkdown(
   view: EditorView,
   serializer: (doc: ProseNode) => string,

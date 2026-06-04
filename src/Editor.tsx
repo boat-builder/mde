@@ -1,9 +1,14 @@
-import { forwardRef, useImperativeHandle, useRef } from "react";
+import {
+  forwardRef,
+  useCallback,
+  useEffect,
+  useImperativeHandle,
+  useRef,
+  useState,
+} from "react";
 import { Crepe } from "@milkdown/crepe";
 import { Milkdown, MilkdownProvider, useEditor } from "@milkdown/react";
 import { editorViewCtx } from "@milkdown/kit/core";
-import type { Ctx } from "@milkdown/kit/ctx";
-import { TextSelection } from "@milkdown/kit/prose/state";
 import type { EditorView } from "@milkdown/kit/prose/view";
 import {
   searchKey,
@@ -12,7 +17,16 @@ import {
   type SearchInfo,
   type SearchMeta,
 } from "./searchPlugin";
-import { criticDecorationPlugin, criticCopyPlugin } from "./criticPlugin";
+import { criticActivePlugin, criticCopyPlugin, setActiveComment } from "./criticPlugin";
+import {
+  criticCommentSchema,
+  criticRemark,
+  collectComments,
+  applyComment,
+  updateCommentBody,
+  removeComment,
+} from "./criticMark";
+import CommentsRail, { type RailComment } from "./CommentsRail";
 
 import "@milkdown/crepe/theme/common/style.css";
 import "@milkdown/crepe/theme/frame.css";
@@ -33,6 +47,11 @@ type Props = {
   onSearchState?: (info: SearchInfo) => void;
 };
 
+// Estimated card height + gap used by the rail's overlap-avoidance stacking pass
+// (cards have a min-height; very tightly packed comments may still touch).
+const CARD_MIN_HEIGHT = 52;
+const CARD_GAP = 10;
+
 function dispatchMeta(view: EditorView, meta: SearchMeta) {
   view.dispatch(view.state.tr.setMeta(searchKey, meta));
 }
@@ -45,39 +64,17 @@ const commentIcon = `
   </svg>
 `;
 
-// Wrap the current selection as a CriticMarkup comment: {==selected==}{>>...<<}
-// then drop the caret inside the (empty) comment so the user types it straight
-// away. No-op on an empty selection — there's nothing to comment on.
-function wrapSelectionAsComment(ctx: Ctx) {
-  const view = ctx.get(editorViewCtx);
-  const { from, to, empty } = view.state.selection;
-  if (empty) return;
-  const selected = view.state.doc.textBetween(from, to);
-  const prefix = `{==${selected}==}{>>`;
-  const wrapped = `${prefix}<<}`;
-  const tr = view.state.tr.insertText(wrapped, from, to);
-  // Caret position is `from + prefix.length` — just after `{>>`, before `<<}`.
-  const caret = from + prefix.length;
-  tr.setSelection(TextSelection.create(tr.doc, caret));
-  view.dispatch(tr.scrollIntoView());
-  view.focus();
-}
-
 function infoOf(view: EditorView): SearchInfo {
   const s = getSearchState(view.state);
   return { count: s?.matches.length ?? 0, current: s?.current ?? 0 };
 }
 
-// Scroll the current match into view WITHOUT touching the editor selection, so
-// the find-bar input keeps focus. We resolve the DOM node at the match position
-// and scroll it; falls back silently if the position can't be mapped.
-function scrollToCurrent(view: EditorView) {
-  const s = getSearchState(view.state);
-  if (!s || s.matches.length === 0) return;
-  const m = s.matches[s.current];
-  if (!m) return;
+// Scroll a doc position into view WITHOUT touching the editor selection. Resolves
+// the DOM node at the position and scrolls it; falls back silently if the
+// position can't be mapped mid-edit.
+function scrollPosIntoView(view: EditorView, pos: number) {
   try {
-    const dom = view.domAtPos(m.from);
+    const dom = view.domAtPos(pos);
     const el =
       dom.node.nodeType === Node.TEXT_NODE
         ? dom.node.parentElement
@@ -86,6 +83,13 @@ function scrollToCurrent(view: EditorView) {
   } catch {
     // position may be momentarily invalid mid-edit; ignore
   }
+}
+
+function scrollToCurrent(view: EditorView) {
+  const s = getSearchState(view.state);
+  if (!s || s.matches.length === 0) return;
+  const m = s.matches[s.current];
+  if (m) scrollPosIntoView(view, m.from);
 }
 
 const MilkdownInner = forwardRef<EditorHandle, Props>(function MilkdownInner(
@@ -103,9 +107,63 @@ const MilkdownInner = forwardRef<EditorHandle, Props>(function MilkdownInner(
   const onSearchStateRef = useRef(onSearchState);
   onSearchStateRef.current = onSearchState;
 
+  // Right-side comment rail state. `comments` is derived from the doc's marks on
+  // every update; activeId/editingId are transient UI state keyed by a comment's
+  // anchor `from` position.
+  const [comments, setComments] = useState<RailComment[]>([]);
+  const [activeId, setActiveId] = useState<number | null>(null);
+  const [editingId, setEditingId] = useState<number | null>(null);
+  const rafRef = useRef<number | null>(null);
+
   const report = () => {
     const view = viewRef.current;
     if (view) onSearchStateRef.current?.(infoOf(view));
+  };
+
+  // Rebuild the rail from the document: scan the comment marks, position each
+  // card at its anchor's vertical offset (in the scroll container's content
+  // space, so cards translate with scroll), and stack to avoid overlaps.
+  // rAF-debounced because it runs on every editor update.
+  const recompute = useCallback(() => {
+    if (rafRef.current != null) return;
+    rafRef.current = requestAnimationFrame(() => {
+      rafRef.current = null;
+      const view = viewRef.current;
+      const wrap = view?.dom.closest(".editor-wrap") as HTMLElement | null;
+      if (!view || !wrap) {
+        setComments([]);
+        return;
+      }
+      const wrapRect = wrap.getBoundingClientRect();
+      const items: RailComment[] = [];
+      let cursor = 0;
+      for (const c of collectComments(view.state.doc)) {
+        let top: number;
+        try {
+          const coords = view.coordsAtPos(c.from);
+          top = coords.top - wrapRect.top + wrap.scrollTop;
+        } catch {
+          top = cursor;
+        }
+        top = Math.max(top, cursor);
+        items.push({ id: c.from, from: c.from, to: c.to, body: c.body, top });
+        cursor = top + CARD_MIN_HEIGHT + CARD_GAP;
+      }
+      wrap.classList.toggle("has-comments", items.length > 0);
+      setComments(items);
+    });
+  }, []);
+
+  // Create a comment from the current selection and open its (empty) card.
+  // Routed through a ref so the run-once toolbar handler calls the latest copy.
+  const createCommentRef = useRef<(view: EditorView) => void>(() => {});
+  createCommentRef.current = (view: EditorView) => {
+    const range = applyComment(view, "");
+    if (!range) return;
+    setActiveComment(view, { from: range.from, to: range.to });
+    setActiveId(range.from);
+    setEditingId(range.from);
+    recompute();
   };
 
   useEditor((root) => {
@@ -124,14 +182,17 @@ const MilkdownInner = forwardRef<EditorHandle, Props>(function MilkdownInner(
             builder.addGroup("critic-markup", "Comment").addItem("comment", {
               icon: commentIcon,
               active: () => false,
-              onRun: wrapSelectionAsComment,
+              onRun: (ctx) => createCommentRef.current(ctx.get(editorViewCtx)),
             });
           },
         },
       },
     });
+    // The comment mark + its remark round-trip must be registered together.
+    // Spread each composable into its underlying MilkdownPlugins.
+    crepe.editor.use([...criticCommentSchema, ...criticRemark]);
     crepe.editor.use(searchPlugin);
-    crepe.editor.use(criticDecorationPlugin);
+    crepe.editor.use(criticActivePlugin);
     crepe.editor.use(criticCopyPlugin);
     crepe.on((api) => {
       api.markdownUpdated((_ctx, markdown) => {
@@ -146,13 +207,91 @@ const MilkdownInner = forwardRef<EditorHandle, Props>(function MilkdownInner(
           dispatchMeta(view, { kind: "set", ...pending });
           scrollToCurrent(view);
         }
+        // Clicking a highlighted anchor activates its comment in the rail.
+        view.dom.addEventListener("click", (e) => {
+          const v = viewRef.current;
+          if (!v) return;
+          const at = v.posAtCoords({ left: e.clientX, top: e.clientY });
+          if (!at) return;
+          const hit = collectComments(v.state.doc).find(
+            (c) => at.pos >= c.from && at.pos < c.to,
+          );
+          if (hit) {
+            setActiveComment(v, { from: hit.from, to: hit.to });
+            setActiveId(hit.from);
+          }
+        });
         report();
+        recompute();
       });
-      // Keep the match count fresh as the user edits the document.
-      api.updated(() => report());
+      // Keep search count + comment rail fresh as the document changes.
+      api.updated(() => {
+        report();
+        recompute();
+      });
     });
     return crepe;
   }, []);
+
+  // The editor width (and thus card anchor positions) changes on window resize.
+  useEffect(() => {
+    const onResize = () => recompute();
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, [recompute]);
+
+  // Drop the reserved gutter when this editor unmounts (e.g. closing the last
+  // tab) so the welcome screen isn't left with a phantom right margin.
+  useEffect(() => {
+    return () => {
+      document.querySelector(".editor-wrap")?.classList.remove("has-comments");
+    };
+  }, []);
+
+  const findComment = (id: number) => comments.find((c) => c.id === id);
+
+  const onActivate = useCallback(
+    (id: number) => {
+      const view = viewRef.current;
+      const c = comments.find((x) => x.id === id);
+      if (!view || !c) return;
+      setActiveComment(view, { from: c.from, to: c.to });
+      setActiveId(id);
+      scrollPosIntoView(view, c.from);
+    },
+    [comments],
+  );
+
+  const onStartEdit = useCallback((id: number) => setEditingId(id), []);
+
+  const onCommitBody = useCallback(
+    (id: number, body: string) => {
+      const view = viewRef.current;
+      const c = findComment(id);
+      setEditingId(null);
+      if (!view || !c) return;
+      if (body.trim() === "") {
+        // An empty / never-filled comment is discarded on blur.
+        removeComment(view, c.from, c.to);
+        setActiveId((a) => (a === id ? null : a));
+      } else if (body !== c.body) {
+        updateCommentBody(view, c.from, c.to, body);
+      }
+    },
+    // findComment closes over `comments`
+    [comments],
+  );
+
+  const onDelete = useCallback(
+    (id: number) => {
+      const view = viewRef.current;
+      const c = findComment(id);
+      setEditingId((e) => (e === id ? null : e));
+      setActiveId((a) => (a === id ? null : a));
+      if (view && c) removeComment(view, c.from, c.to);
+    },
+    [comments],
+  );
 
   useImperativeHandle(
     ref,
@@ -192,7 +331,20 @@ const MilkdownInner = forwardRef<EditorHandle, Props>(function MilkdownInner(
     [],
   );
 
-  return <Milkdown />;
+  return (
+    <>
+      <Milkdown />
+      <CommentsRail
+        comments={comments}
+        activeId={activeId}
+        editingId={editingId}
+        onActivate={onActivate}
+        onStartEdit={onStartEdit}
+        onCommitBody={onCommitBody}
+        onDelete={onDelete}
+      />
+    </>
+  );
 });
 
 const Editor = forwardRef<EditorHandle, Props>(function Editor(props, ref) {
